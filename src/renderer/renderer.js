@@ -37,6 +37,10 @@ let hoveredVariantId = null;
 // Export option: organize by area subfolder
 let organizeByArea = false;
 
+// Multi-department support
+let departments = null; // null = single-dept, otherwise array of { name, psdLayer, classifiedLayers, variants, nextVariantId, selectedVariantId, templateVariantId }
+let selectedDepartmentIndex = 0;
+
 // ============================================
 // Sidecar JSON Persistence
 // ============================================
@@ -69,13 +73,32 @@ function saveSidecar() {
       const folder = path.dirname(sidecarPath);
       if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 
-      const data = {
-        variants,
-        nextVariantId,
-        exportSizes,
-        outputDirectory,
-        organizeByArea,
-      };
+      let data;
+      if (departments) {
+        // Save current department state back before serializing
+        saveDepartmentState();
+        data = {
+          version: 2,
+          departments: {},
+          exportSizes,
+          outputDirectory,
+          organizeByArea,
+        };
+        for (const dept of departments) {
+          data.departments[dept.name] = {
+            variants: dept.variants,
+            nextVariantId: dept.nextVariantId,
+          };
+        }
+      } else {
+        data = {
+          variants,
+          nextVariantId,
+          exportSizes,
+          outputDirectory,
+          organizeByArea,
+        };
+      }
       fs.writeFileSync(sidecarPath, JSON.stringify(data, null, 2), 'utf-8');
 
       // Clean up legacy sidecar if it exists
@@ -107,51 +130,75 @@ function loadSidecar() {
     const raw = fs.readFileSync(sidecarPath, 'utf-8');
     const data = JSON.parse(raw);
 
-    if (!Array.isArray(data.variants) || data.variants.length === 0) return false;
+    // Reconcile variant states against current PSD layers
+    function reconcileVariants(variantList, cl) {
+      const prevClassified = classifiedLayers;
+      classifiedLayers = cl;
+      const currentToggleNames = new Set(getUniqueToggleLayers().map(l => l.name));
+      const currentGroupNames = new Set(getUniqueVariantGroups().map(g => g.name));
+      const allCurrentNames = new Set([...currentToggleNames, ...currentGroupNames]);
+      let mismatch = false;
 
-    // Build set of current PSD layer names for validation
-    const currentToggleNames = new Set(getUniqueToggleLayers().map(l => l.name));
-    const currentGroupNames = new Set(getUniqueVariantGroups().map(g => g.name));
-    const allCurrentNames = new Set([...currentToggleNames, ...currentGroupNames]);
+      for (const variant of variantList) {
+        if (!variant.layerStates) variant.layerStates = {};
+        for (const key of Object.keys(variant.layerStates)) {
+          if (!allCurrentNames.has(key)) { delete variant.layerStates[key]; mismatch = true; }
+        }
+        for (const name of currentToggleNames) {
+          if (!(name in variant.layerStates)) {
+            variant.layerStates[name] = { visible: isPaintOverlay(name) };
+            mismatch = true;
+          }
+        }
+        for (const group of getUniqueVariantGroups()) {
+          if (!(group.name in variant.layerStates)) {
+            variant.layerStates[group.name] = { selectedOption: group.options[0]?.name || null };
+            mismatch = true;
+          }
+        }
+        syncMergedVariantGroups(variant.layerStates);
+      }
+      classifiedLayers = prevClassified;
+      return mismatch;
+    }
 
     let mismatch = false;
 
-    // Validate and reconcile each variant's layerStates
-    for (const variant of data.variants) {
-      if (!variant.layerStates) variant.layerStates = {};
-
-      // Remove states for layers no longer in PSD
-      for (const key of Object.keys(variant.layerStates)) {
-        if (!allCurrentNames.has(key)) {
-          delete variant.layerStates[key];
+    if (data.version === 2 && data.departments && departments) {
+      // Multi-department sidecar
+      for (const dept of departments) {
+        const saved = data.departments[dept.name];
+        if (saved && Array.isArray(saved.variants) && saved.variants.length > 0) {
+          mismatch = reconcileVariants(saved.variants, dept.classifiedLayers) || mismatch;
+          dept.variants = saved.variants;
+          dept.nextVariantId = saved.nextVariantId || (Math.max(...saved.variants.map(v => v.id)) + 1);
+          dept.selectedVariantId = saved.variants[0].id;
+        } else {
+          // No saved data for this department — create fresh base
+          const prevCl = classifiedLayers;
+          classifiedLayers = dept.classifiedLayers;
+          const base = createBaseVariant();
+          dept.variants = [base];
+          dept.nextVariantId = nextVariantId;
+          dept.selectedVariantId = base.id;
+          classifiedLayers = prevCl;
           mismatch = true;
         }
+        dept.templateVariantId = null;
       }
-
-      // Add defaults for new toggle layers
-      for (const name of currentToggleNames) {
-        if (!(name in variant.layerStates)) {
-          variant.layerStates[name] = { visible: isPaintOverlay(name) };
-          mismatch = true;
-        }
-      }
-
-      // Add defaults for new variant groups
-      for (const group of getUniqueVariantGroups()) {
-        if (!(group.name in variant.layerStates)) {
-          variant.layerStates[group.name] = { selectedOption: group.options[0]?.name || null };
-          mismatch = true;
-        }
-      }
-
-      // Sync merged variant groups (groups with identical option sets)
-      syncMergedVariantGroups(variant.layerStates);
+      loadDepartmentIntoGlobals(0);
+    } else if (!departments) {
+      // Single-department sidecar
+      if (!Array.isArray(data.variants) || data.variants.length === 0) return false;
+      mismatch = reconcileVariants(data.variants, classifiedLayers);
+      variants = data.variants;
+      nextVariantId = data.nextVariantId || (Math.max(...variants.map(v => v.id)) + 1);
+      selectedVariantId = variants[0].id;
+    } else {
+      // Mismatch: sidecar is single-dept but PSD is multi-dept (or vice versa)
+      showToast('PSD structure changed — creating fresh variants', 'warning', 5000);
+      return false;
     }
-
-    // Restore state
-    variants = data.variants;
-    nextVariantId = data.nextVariantId || (Math.max(...variants.map(v => v.id)) + 1);
-    selectedVariantId = variants[0].id;
 
     if (Array.isArray(data.exportSizes) && data.exportSizes.length > 0) {
       exportSizes = data.exportSizes;
@@ -329,24 +376,77 @@ async function loadPsdFile(filePath) {
     document.getElementById('file-name').textContent = fileName;
     document.getElementById('drop-zone').classList.add('file-loaded');
 
-    // Parse and classify layers
-    classifiedLayers = classifyLayers(psd.children || []);
+    // Detect departments
+    const detectedDepts = detectDepartments(psd.children || []);
 
-    // Validate required layers
-    validateRequiredLayers(classifiedLayers);
+    if (detectedDepts) {
+      // Multi-department mode
+      // Classify shared top-level layers (Paint Overlay etc.) to merge into each dept
+      const sharedClassified = classifyLayers(
+        (psd.children || []).filter(l => !detectedDepts.some(d => d.name === l.name)),
+        0
+      );
 
-    // Try to restore from sidecar, otherwise create fresh Base
-    const restored = loadSidecar();
-    if (!restored) {
-      variants = [];
-      nextVariantId = 1;
-      const base = createBaseVariant();
-      variants.push(base);
-      selectedVariantId = base.id;
-      exportSizes = [psd.width];
+      departments = detectedDepts.map(dept => {
+        idCounter = 0; // reset per department for consistent IDs
+        const deptClassified = classifyLayers(dept.psdLayer.children || [], 0);
+        // Merge shared toggles (Paint Overlay) into department
+        deptClassified.toggle.push(...sharedClassified.toggle.map(t => ({ ...t })));
+        deptClassified.locked.push(...sharedClassified.locked.map(l => ({ ...l })));
+        return {
+          name: dept.name,
+          psdLayer: dept.psdLayer,
+          classifiedLayers: deptClassified,
+          variants: [],
+          nextVariantId: 1,
+          selectedVariantId: null,
+          templateVariantId: null,
+        };
+      });
+
+      selectedDepartmentIndex = 0;
+
+      // Try to restore from sidecar
+      const restored = loadSidecar();
+      if (!restored) {
+        // Create fresh base variants for each department
+        for (const dept of departments) {
+          loadDepartmentIntoGlobals(departments.indexOf(dept));
+          const base = createBaseVariant();
+          dept.variants = [base];
+          dept.nextVariantId = nextVariantId;
+          dept.selectedVariantId = base.id;
+        }
+        exportSizes = [psd.width];
+      }
+
+      // Load first department into globals
+      loadDepartmentIntoGlobals(0);
+
+      // Validate using first department + shared
+      validateRequiredLayers(classifiedLayers);
+
+      console.log(`Multi-department PSD: ${departments.map(d => d.name).join(', ')}`);
+    } else {
+      // Single-department mode
+      departments = null;
+      classifiedLayers = classifyLayers(psd.children || []);
+
+      validateRequiredLayers(classifiedLayers);
+
+      const restored = loadSidecar();
+      if (!restored) {
+        variants = [];
+        nextVariantId = 1;
+        const base = createBaseVariant();
+        variants.push(base);
+        selectedVariantId = base.id;
+        exportSizes = [psd.width];
+      }
     }
 
     // Render everything
+    renderDepartmentBar();
     renderVariantList();
     renderLayerSettings();
     updateBottomBar();
@@ -373,6 +473,11 @@ async function loadPsdFile(filePath) {
 // ============================================
 // Layer Classification
 // ============================================
+
+// Escape HTML special characters to prevent injection via innerHTML
+function escHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 const COLOR_ROLES = {
   red: 'locked',
@@ -447,6 +552,97 @@ function isPaintOverlay(name) {
 }
 
 let idCounter = 0;
+// Detect if PSD has multiple departments (uncolored groups containing side-patterned sub-groups)
+function detectDepartments(psdChildren) {
+  const SIDE_PATTERNS = ['left side', 'right side', 'rear', 'front', 'hood', 'roof'];
+  const candidates = [];
+
+  for (const layer of psdChildren) {
+    const color = layer.layerColor || 'none';
+    const role = COLOR_ROLES[color];
+    if (role || !Array.isArray(layer.children)) continue;
+
+    // Check if this uncolored group contains side-patterned sub-groups
+    const hasSides = layer.children.some(child =>
+      Array.isArray(child.children) &&
+      !COLOR_ROLES[child.layerColor || 'none'] &&
+      SIDE_PATTERNS.includes(child.name.toLowerCase().trim())
+    );
+
+    if (hasSides) {
+      candidates.push({ name: layer.name, psdLayer: layer });
+    }
+  }
+
+  return candidates.length >= 2 ? candidates : null;
+}
+
+// Check if we're in multi-department mode
+function isMultiDepartment() {
+  return departments !== null;
+}
+
+// Get the active department object (or null for single-dept)
+function getActiveDepartment() {
+  if (!departments) return null;
+  return departments[selectedDepartmentIndex] || null;
+}
+
+// Save current global state back into the active department
+function saveDepartmentState() {
+  if (!departments) return;
+  const dept = departments[selectedDepartmentIndex];
+  if (!dept) return;
+  dept.classifiedLayers = classifiedLayers;
+  dept.variants = variants;
+  dept.nextVariantId = nextVariantId;
+  dept.selectedVariantId = selectedVariantId;
+  dept.templateVariantId = templateVariantId;
+}
+
+// Load a department's state into the globals
+function loadDepartmentIntoGlobals(index) {
+  if (!departments || !departments[index]) return;
+  const dept = departments[index];
+  classifiedLayers = dept.classifiedLayers;
+  variants = dept.variants;
+  nextVariantId = dept.nextVariantId;
+  selectedVariantId = dept.selectedVariantId;
+  templateVariantId = dept.templateVariantId;
+  selectedDepartmentIndex = index;
+}
+
+// Switch to a different department
+function switchDepartment(index) {
+  if (!departments || index === selectedDepartmentIndex) return;
+  saveDepartmentState();
+  loadDepartmentIntoGlobals(index);
+  renderDepartmentBar();
+  renderVariantList();
+  renderLayerSettings();
+  updateBottomBar();
+  renderPreview();
+}
+
+// Get the children to composite for preview/export
+// In multi-dept mode: active department's children + shared top-level layers
+function getEffectiveChildren(departmentIndex) {
+  if (!departments) return currentPsd.children || [];
+  const deptNames = new Set(departments.map(d => d.name));
+  const dept = departments[departmentIndex];
+  const result = [];
+  for (const layer of (currentPsd.children || [])) {
+    if (layer.name === dept.name) {
+      // Include this department's children directly (flatten one level)
+      result.push(layer);
+    } else if (!deptNames.has(layer.name)) {
+      // Include shared layers (not a department)
+      result.push(layer);
+    }
+  }
+  return result;
+}
+
 function generateLayerId(name, depth) {
   idCounter++;
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -481,6 +677,24 @@ function validateRequiredLayers(classified) {
 // Render Variant List (Left Panel)
 // ============================================
 
+function renderDepartmentBar() {
+  const bar = document.getElementById('department-bar');
+  if (!bar) return;
+  if (!departments) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = '';
+  bar.innerHTML = '';
+  for (let i = 0; i < departments.length; i++) {
+    const tab = document.createElement('button');
+    tab.className = `department-tab${i === selectedDepartmentIndex ? ' active' : ''}`;
+    tab.textContent = departments[i].name;
+    tab.addEventListener('click', () => switchDepartment(i));
+    bar.appendChild(tab);
+  }
+}
+
 function renderVariantList() {
   const container = document.getElementById('variant-list');
   const countEl = document.getElementById('variant-count');
@@ -511,7 +725,7 @@ function renderVariantList() {
 
     item.innerHTML = `
       <span class="variant-item-indicator"></span>
-      <span class="variant-item-name">${variant.name}</span>
+      <span class="variant-item-name">${escHtml(variant.name)}</span>
       ${badges.join('')}
     `;
 
@@ -579,8 +793,8 @@ function renderLayerSettings() {
       const row = document.createElement('div');
       row.className = 'setting-row';
       row.innerHTML = `
-        <input type="checkbox" id="chk-${variant.id}-${layer.id}" data-layer-name="${layer.name}" ${isChecked ? 'checked' : ''}>
-        <label for="chk-${variant.id}-${layer.id}">${layer.name}</label>
+        <input type="checkbox" id="chk-${variant.id}-${layer.id}" data-layer-name="${escHtml(layer.name)}" ${isChecked ? 'checked' : ''}>
+        <label for="chk-${variant.id}-${layer.id}">${escHtml(layer.name)}</label>
       `;
 
       const checkbox = row.querySelector('input');
@@ -632,7 +846,7 @@ function renderLayerSettings() {
       radioGroup.className = 'radio-group';
       // Show merged label: if multiple groups, join names
       const label = groupNames.length > 1 ? groupNames.join(' / ') : groupNames[0];
-      radioGroup.innerHTML = `<div class="radio-group-label">${label}</div>`;
+      radioGroup.innerHTML = `<div class="radio-group-label">${escHtml(label)}</div>`;
 
       for (let i = 0; i < group.options.length; i++) {
         const opt = group.options[i];
@@ -643,8 +857,8 @@ function renderLayerSettings() {
         const option = document.createElement('div');
         option.className = 'radio-option';
         option.innerHTML = `
-          <input type="radio" name="${radioName}" id="${radioId}" data-group="${group.name}" data-option="${opt.name}" ${isSelected ? 'checked' : ''}>
-          <label for="${radioId}">${opt.name}</label>
+          <input type="radio" name="${radioName}" id="${radioId}" data-group="${escHtml(group.name)}" data-option="${escHtml(opt.name)}" ${isSelected ? 'checked' : ''}>
+          <label for="${radioId}">${escHtml(opt.name)}</label>
         `;
 
         const radio = option.querySelector('input');
@@ -675,7 +889,7 @@ function renderLayerSettings() {
     for (const layer of uniqueLocked) {
       const item = document.createElement('div');
       item.className = 'locked-item';
-      item.innerHTML = `${SVG_ICONS.lockSmall} ${layer.name}`;
+      item.innerHTML = `${SVG_ICONS.lockSmall} ${escHtml(layer.name)}`;
       section.appendChild(item);
     }
     container.appendChild(section);
@@ -694,7 +908,7 @@ function renderLayerSettings() {
     for (const layer of uniqueInfo) {
       const item = document.createElement('div');
       item.className = 'info-item';
-      item.innerHTML = `${SVG_ICONS.infoSmall} ${layer.name}`;
+      item.innerHTML = `${SVG_ICONS.infoSmall} ${escHtml(layer.name)}`;
       section.appendChild(item);
     }
     container.appendChild(section);
@@ -907,10 +1121,6 @@ function applyStroke(ctx, layer, contentCanvas, offsetX, offsetY) {
   const effects = layer.effects;
   if (!effects || !effects.stroke) return;
 
-  for (let si = 0; si < effects.stroke.length; si++) {
-    const s = effects.stroke[si];
-    console.log(`[FX] Stroke[${si}] on "${layer.name}": enabled=${s.enabled} present=${s.present} size=${s.size?.value} pos=${s.position} fill=${s.fillType} opacity=${s.opacity} blend=${s.blendMode} color=r${s.color?.r},g${s.color?.g},b${s.color?.b}`);
-  }
   for (const stroke of effects.stroke) {
     if (stroke.enabled === false || stroke.present === false) continue;
     if (stroke.fillType && stroke.fillType !== 'color') continue;
@@ -1488,7 +1698,7 @@ function renderPreview() {
   drawCheckerboard(ctx, canvas.width, canvas.height);
 
   // Composite layers bottom-to-top with clipping group support
-  drawChildren(ctx, currentPsd.children || [], variant.layerStates, null, false, false);
+  drawChildren(ctx, getEffectiveChildren(selectedDepartmentIndex), variant.layerStates, null, false, false);
 
   const elapsed = performance.now() - startTime;
   const info = document.getElementById('preview-info');
@@ -1500,10 +1710,24 @@ function renderPreview() {
 }
 
 let previewDebounceTimer = null;
+let pendingPreviewUpdate = false;
+
 function schedulePreviewUpdate() {
+  if (document.hidden) {
+    pendingPreviewUpdate = true;
+    return;
+  }
   clearTimeout(previewDebounceTimer);
   previewDebounceTimer = setTimeout(renderPreview, 50);
 }
+
+// Re-render when window becomes visible again if an update was pending
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && pendingPreviewUpdate) {
+    pendingPreviewUpdate = false;
+    schedulePreviewUpdate();
+  }
+});
 
 // ============================================
 // Variant Actions
@@ -1658,6 +1882,8 @@ variantsResizeHandle.addEventListener('mousedown', (e) => {
 
 document.addEventListener('mousemove', (e) => {
   if (!isResizingVariants) return;
+  if (!e.timeStamp || e.timeStamp - (variantsResizeHandle._lastMove || 0) < 16) return;
+  variantsResizeHandle._lastMove = e.timeStamp;
   const delta = e.clientX - variantsResizeStartX;
   const newWidth = Math.max(140, Math.min(500, variantsResizeStartWidth + delta));
   variantsPanel.style.width = newWidth + 'px';
@@ -1923,13 +2149,14 @@ renderExportSizes();
 // ============================================
 
 // Render a variant's composite to a clean canvas (no checkerboard)
-function renderExportCanvas(variant) {
+function renderExportCanvas(variant, deptIndex) {
   const canvas = document.createElement('canvas');
   canvas.width = currentPsd.width;
   canvas.height = currentPsd.height;
   const ctx = canvas.getContext('2d');
 
-  drawChildren(ctx, currentPsd.children || [], variant.layerStates, null, false, false);
+  const di = deptIndex != null ? deptIndex : selectedDepartmentIndex;
+  drawChildren(ctx, getEffectiveChildren(di), variant.layerStates, null, false, false);
 
   return canvas;
 }
@@ -1993,17 +2220,26 @@ function getVariantAreaName(variant) {
   return null;
 }
 
-function getExportFilePath(variant, size, hasMultipleSizes) {
+function sanitizePathComponent(name) {
+  return name.replace(/\.\./g, '').replace(/[/\\:*?"<>|\x00]/g, '_').trim() || '_';
+}
+
+function getExportFilePath(variant, size, hasMultipleSizes, deptName) {
   const stem = path.basename(currentFilePath, '.psd');
   let name = stem;
 
   // Add variant name unless it's the default "Base"
   if (variant.name.toLowerCase() !== 'base') {
-    name += ` ${variant.name}`;
+    name += ` ${sanitizePathComponent(variant.name)}`;
   }
 
   const fileName = `${name}.png`;
   const parts = [];
+
+  // Department subfolder when multi-department
+  if (deptName) {
+    parts.push(sanitizePathComponent(deptName));
+  }
 
   // Size subfolder when exporting at multiple sizes
   if (hasMultipleSizes) {
@@ -2013,7 +2249,7 @@ function getExportFilePath(variant, size, hasMultipleSizes) {
   // Area subfolder when organize by area is enabled
   if (organizeByArea) {
     const area = getVariantAreaName(variant);
-    if (area) parts.push(area);
+    if (area) parts.push(sanitizePathComponent(area));
   }
 
   if (parts.length > 0) {
@@ -2055,26 +2291,32 @@ async function exportAllVariants() {
   const originalText = btn.textContent;
   btn.disabled = true;
 
+  // Build list of export jobs: [{variant, deptIndex, deptName}]
+  const jobs = [];
+  if (departments) {
+    saveDepartmentState();
+    for (let di = 0; di < departments.length; di++) {
+      for (const variant of departments[di].variants) {
+        jobs.push({ variant, deptIndex: di, deptName: departments[di].name });
+      }
+    }
+  } else {
+    for (const variant of variants) {
+      jobs.push({ variant, deptIndex: 0, deptName: null });
+    }
+  }
+
   const hasMultipleSizes = exportSizes.length > 1;
-  const totalSteps = variants.length * exportSizes.length;
+  const totalSteps = jobs.length * exportSizes.length;
   let currentStep = 0;
   let exported = 0;
   let errors = 0;
 
-  // Create size subfolders when exporting at multiple sizes
-  if (hasMultipleSizes) {
-    for (const size of exportSizes) {
-      const subDir = path.join(outputDirectory, String(size));
-      if (!fs.existsSync(subDir)) {
-        fs.mkdirSync(subDir, { recursive: true });
-      }
-    }
-  }
-
   try {
-    for (const variant of variants) {
-      // Render full-size composite once per variant
-      const fullCanvas = renderExportCanvas(variant);
+    for (const job of jobs) {
+      // Set classifiedLayers for correct area name resolution during export
+      if (departments) loadDepartmentIntoGlobals(job.deptIndex);
+      const fullCanvas = renderExportCanvas(job.variant, job.deptIndex);
 
       for (const size of exportSizes) {
         currentStep++;
@@ -2083,21 +2325,19 @@ async function exportAllVariants() {
         try {
           const scaled = scaleCanvas(fullCanvas, size);
           const buffer = await canvasToBuffer(scaled);
-          const relPath = getExportFilePath(variant, size, hasMultipleSizes);
+          const relPath = getExportFilePath(job.variant, size, hasMultipleSizes, job.deptName);
           const filePath = path.join(outputDirectory, relPath);
 
-          // Ensure subdirectories exist
           const fileDir = path.dirname(filePath);
           if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
 
           fs.writeFileSync(filePath, buffer);
           exported++;
         } catch (err) {
-          console.error(`Export error for "${variant.name}" at ${size}px:`, err);
+          console.error(`Export error for "${job.variant.name}" at ${size}px:`, err);
           errors++;
         }
 
-        // Yield to UI between exports
         await new Promise(r => setTimeout(r, 10));
       }
     }
@@ -2111,6 +2351,8 @@ async function exportAllVariants() {
     console.error('Export failed:', err);
     showToast(`Export failed: ${err.message}`, 'error');
   } finally {
+    // Restore active department after export
+    if (departments) loadDepartmentIntoGlobals(selectedDepartmentIndex);
     isExporting = false;
     btn.disabled = false;
     btn.textContent = originalText;

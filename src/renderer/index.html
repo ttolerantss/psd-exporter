@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; script-src 'self';">
   <title>LiveryLab Export</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -304,6 +305,40 @@
       flex: 1;
       display: flex;
       overflow: hidden;
+    }
+
+    /* Department Bar */
+    .department-bar {
+      display: flex;
+      gap: var(--space-xs);
+      padding: var(--space-xs) var(--space-lg);
+      background: var(--bg-deep);
+      border-bottom: 1px solid var(--border-subtle);
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+
+    .department-tab {
+      padding: var(--space-xs) var(--space-lg);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .department-tab:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .department-tab.active {
+      background: rgba(24, 104, 218, 0.15);
+      border-color: var(--brand-primary);
+      color: var(--brand-accent);
     }
 
     /* Variants Panel (Left) */
@@ -1466,6 +1501,9 @@
         </span>
       </div>
     </div>
+
+    <!-- Department Bar (multi-department PSDs only) -->
+    <div class="department-bar" id="department-bar" style="display:none"></div>
 
     <!-- Main Body -->
     <div class="main-body">
