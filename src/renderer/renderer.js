@@ -34,6 +34,10 @@ let isExporting = false;
 let templateVariantId = null; // null = use base
 let hoveredVariantId = null;
 
+// Multi-select for variant list
+let selectedVariantIds = new Set(); // additional selections beyond the primary
+let variantClipboard = []; // copied variant layerStates for cross-department paste
+
 // Export option: organize by area subfolder
 let organizeByArea = false;
 
@@ -327,7 +331,7 @@ function syncMergedVariantGroups(layerStates) {
   const groups = getUniqueVariantGroups();
   const mergedMap = new Map();
   for (const group of groups) {
-    const optionKey = group.options.map(o => o.name.toLowerCase()).sort().join('\0');
+    const optionKey = getOptionMergeKey(group);
     if (!mergedMap.has(optionKey)) mergedMap.set(optionKey, []);
     mergedMap.get(optionKey).push(group.name);
   }
@@ -473,6 +477,16 @@ async function loadPsdFile(filePath) {
 // ============================================
 // Layer Classification
 // ============================================
+
+// Normalize an option name for matching (strips whitespace, lowercases, removes non-alphanumeric)
+function normalizeOptionName(name) {
+  return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// Generate a merge key for a variant group's options (normalized, sorted)
+function getOptionMergeKey(group) {
+  return group.options.map(o => normalizeOptionName(o.name)).sort().join('\0');
+}
 
 // Escape HTML special characters to prevent injection via innerHTML
 function escHtml(str) {
@@ -715,7 +729,9 @@ function renderVariantList() {
 
   for (const variant of variants) {
     const item = document.createElement('div');
-    item.className = `variant-item${variant.id === selectedVariantId ? ' active' : ''}`;
+    const isActive = variant.id === selectedVariantId;
+    const isMultiSelected = selectedVariantIds.has(variant.id);
+    item.className = `variant-item${isActive ? ' active' : ''}${isMultiSelected ? ' multi-selected' : ''}`;
     item.dataset.variantId = variant.id;
 
     const isTemplate = variant.id === effectiveTemplateId;
@@ -820,7 +836,7 @@ function renderLayerSettings() {
     const mergedMap = new Map(); // optionKey -> merged entry
     for (const group of uniqueGroups) {
       const optionNames = group.options.map(o => o.name);
-      const optionKey = optionNames.map(n => n.toLowerCase()).sort().join('\0');
+      const optionKey = getOptionMergeKey(group);
       if (mergedMap.has(optionKey)) {
         mergedMap.get(optionKey).groupNames.push(group.name);
       } else {
@@ -2031,6 +2047,85 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Ctrl+J — duplicate selected variants
+  if (e.ctrlKey && e.key.toLowerCase() === 'j' && variants.length > 0) {
+    e.preventDefault();
+    // Gather all selected variants (primary + multi-selected)
+    const ids = new Set([selectedVariantId, ...selectedVariantIds]);
+    const toDuplicate = variants.filter(v => ids.has(v.id));
+    if (toDuplicate.length === 0) return;
+    const newVariants = [];
+    for (const src of toDuplicate) {
+      const dup = {
+        id: nextVariantId++,
+        name: `${src.name} Copy`,
+        isBase: false,
+        layerStates: JSON.parse(JSON.stringify(src.layerStates)),
+      };
+      newVariants.push(dup);
+    }
+    variants.push(...newVariants);
+    selectedVariantIds.clear();
+    selectVariant(newVariants[0].id);
+    for (let i = 1; i < newVariants.length; i++) selectedVariantIds.add(newVariants[i].id);
+    renderVariantList();
+    saveSidecar();
+    showToast(`Duplicated ${toDuplicate.length} variant${toDuplicate.length > 1 ? 's' : ''}`);
+    return;
+  }
+
+  // Ctrl+C — copy selected variants to clipboard (for cross-department paste)
+  if (e.ctrlKey && e.key.toLowerCase() === 'c' && variants.length > 0) {
+    e.preventDefault();
+    const ids = new Set([selectedVariantId, ...selectedVariantIds]);
+    const toCopy = variants.filter(v => ids.has(v.id));
+    if (toCopy.length === 0) return;
+    variantClipboard = toCopy.map(v => ({
+      name: v.name,
+      isBase: false,
+      layerStates: JSON.parse(JSON.stringify(v.layerStates)),
+    }));
+    showToast(`Copied ${toCopy.length} variant${toCopy.length > 1 ? 's' : ''}`);
+    return;
+  }
+
+  // Ctrl+V — paste variants from clipboard
+  if (e.ctrlKey && e.key.toLowerCase() === 'v' && variantClipboard.length > 0) {
+    e.preventDefault();
+    const pasted = [];
+    for (const src of variantClipboard) {
+      const dup = {
+        id: nextVariantId++,
+        name: src.name,
+        isBase: false,
+        layerStates: JSON.parse(JSON.stringify(src.layerStates)),
+      };
+      // Reconcile: add missing layer states for this department, remove unknown ones
+      const currentToggleNames = new Set(getUniqueToggleLayers().map(l => l.name));
+      const currentGroupNames = new Set(getUniqueVariantGroups().map(g => g.name));
+      const allCurrentNames = new Set([...currentToggleNames, ...currentGroupNames]);
+      for (const key of Object.keys(dup.layerStates)) {
+        if (!allCurrentNames.has(key)) delete dup.layerStates[key];
+      }
+      for (const name of currentToggleNames) {
+        if (!(name in dup.layerStates)) dup.layerStates[name] = { visible: isPaintOverlay(name) };
+      }
+      for (const group of getUniqueVariantGroups()) {
+        if (!(group.name in dup.layerStates)) dup.layerStates[group.name] = { selectedOption: group.options[0]?.name || null };
+      }
+      syncMergedVariantGroups(dup.layerStates);
+      pasted.push(dup);
+    }
+    variants.push(...pasted);
+    selectedVariantIds.clear();
+    selectVariant(pasted[0].id);
+    for (let i = 1; i < pasted.length; i++) selectedVariantIds.add(pasted[i].id);
+    renderVariantList();
+    saveSidecar();
+    showToast(`Pasted ${pasted.length} variant${pasted.length > 1 ? 's' : ''}`);
+    return;
+  }
+
   // The following shortcuts are disabled when typing in inputs
   if (isInputFocused) return;
 
@@ -2201,7 +2296,7 @@ function getVariantAreaName(variant) {
   const groups = getUniqueVariantGroups();
   const mergedMap = new Map();
   for (const group of groups) {
-    const optionKey = group.options.map(o => o.name.toLowerCase()).sort().join('\0');
+    const optionKey = getOptionMergeKey(group);
     if (!mergedMap.has(optionKey)) mergedMap.set(optionKey, []);
     mergedMap.get(optionKey).push(group.name);
   }
@@ -2420,10 +2515,23 @@ document.getElementById('variant-list').addEventListener('click', (e) => {
   const id = parseInt(item.dataset.variantId);
   const now = Date.now();
 
+  if (e.ctrlKey || e.metaKey) {
+    // Ctrl+Click: toggle multi-select
+    if (id === selectedVariantId) return; // can't deselect primary
+    if (selectedVariantIds.has(id)) {
+      selectedVariantIds.delete(id);
+    } else {
+      selectedVariantIds.add(id);
+    }
+    renderVariantList();
+    return;
+  }
+
   if (variantLastClickId === id && (now - variantLastClickTime) < 400) {
     // Double-click: select then rename
     const variant = variants.find(v => v.id === id);
     if (variant) {
+      selectedVariantIds.clear();
       selectVariant(id);
       const freshItem = document.querySelector(`.variant-item[data-variant-id="${id}"]`);
       if (freshItem) {
@@ -2434,6 +2542,7 @@ document.getElementById('variant-list').addEventListener('click', (e) => {
     variantLastClickId = null;
     variantLastClickTime = 0;
   } else {
+    selectedVariantIds.clear();
     selectVariant(id);
     variantLastClickId = id;
     variantLastClickTime = now;

@@ -104,6 +104,10 @@ npm run build        # NSIS installer in dist/
 | Key | Action |
 |---|---|
 | Arrow Up/Down | Cycle through variants |
+| Ctrl+Click | Multi-select variants |
+| Ctrl+J | Duplicate selected variant(s) |
+| Ctrl+C | Copy selected variant(s) to clipboard |
+| Ctrl+V | Paste variant(s) from clipboard (works cross-department) |
 | Space (hover variant) | Set/unset as template for new variants |
 | Delete | Delete selected variant |
 | Ctrl+O | Open PSD file |
