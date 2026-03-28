@@ -1,0 +1,65 @@
+{
+  "name": "liverylab-export",
+  "version": "1.0.0",
+  "description": "LiveryLab Export - PSD layer variant exporter for livery designers",
+  "main": "src/main/main.js",
+  "scripts": {
+    "bundle": "esbuild src/renderer/renderer.js --bundle --outfile=src/renderer/renderer.bundle.js --platform=node --external:electron --external:fs --external:path --external:os --external:ag-psd --format=cjs",
+    "start": "npm run bundle && electron . --max-old-space-size=4096",
+    "dev": "npm run bundle && electron . --max-old-space-size=4096",
+    "build": "npm run bundle && electron-builder --win",
+    "build:dir": "npm run bundle && electron-builder --win --dir"
+  },
+  "keywords": [
+    "livery",
+    "export",
+    "psd",
+    "electron"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^40.0.0",
+    "electron-builder": "^26.4.0",
+    "esbuild": "^0.27.2"
+  },
+  "dependencies": {
+    "ag-psd": "^29.1.0"
+  },
+  "build": {
+    "appId": "com.liverylab.export",
+    "productName": "LiveryLab Export",
+    "icon": "src/assets/logol.ico",
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node",
+      "**/src/assets/*.ico"
+    ],
+    "files": [
+      "src/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "src/assets/logol.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

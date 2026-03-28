@@ -1,0 +1,6 @@
+node_modules/
+dist/
+src/renderer/renderer.bundle.js
+*.log
+.DS_Store
+Thumbs.db

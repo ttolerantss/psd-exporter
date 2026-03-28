@@ -1,0 +1,1704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiveryLab Export</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       DESIGN TOKENS (from LiveryLab Design Language)
+       ============================================ */
+
+    :root {
+      /* Backgrounds */
+      --bg-deep: #0f0f10;
+      --bg-primary: #1a1a1a;
+      --bg-sidebar: #151515;
+      --bg-elevated: #222222;
+      --bg-input: #2a2a2a;
+      --bg-hover: #333333;
+
+      /* Text */
+      --text-primary: #ffffff;
+      --text-secondary: #cccccc;
+      --text-tertiary: #aaaaaa;
+      --text-muted: #888888;
+      --text-disabled: #666666;
+      --text-faint: #555555;
+
+      /* Brand */
+      --brand-primary: #1868da;
+      --brand-hover: #2878ea;
+      --brand-accent: #4a9eff;
+      --brand-update: #3b82f6;
+
+      /* Borders */
+      --border-default: #333333;
+      --border-subtle: #2a2a2a;
+      --border-input: #444444;
+      --border-hover: #555555;
+
+      /* Semantic */
+      --color-success: #4caf50;
+      --color-warning: #febc2e;
+      --color-error: #e74c3c;
+      --color-error-bright: #ff5f57;
+
+      /* Warning notice */
+      --warning-bg: rgba(255, 200, 50, 0.08);
+      --warning-border: rgba(255, 200, 50, 0.2);
+      --warning-text: #b89a3a;
+
+      /* Spacing */
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 12px;
+      --space-lg: 16px;
+      --space-xl: 24px;
+      --space-xxl: 32px;
+
+      /* Radius */
+      --radius-sm: 3px;
+      --radius-default: 4px;
+      --radius-md: 6px;
+      --radius-lg: 8px;
+      --radius-xl: 12px;
+
+      /* Transitions */
+      --transition-quick: 0.15s ease;
+      --transition-normal: 0.2s ease;
+      --transition-slow: 0.3s ease;
+    }
+
+    /* ============================================
+       RESET & BASE
+       ============================================ */
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      transition: none !important;
+    }
+
+    body {
+      font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      color: var(--text-primary);
+      background: var(--bg-primary);
+      overflow: hidden;
+      user-select: none;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ============================================
+       CUSTOM TITLE BAR (macOS-style traffic lights)
+       ============================================ */
+
+    .titlebar {
+      display: flex;
+      align-items: center;
+      height: 36px;
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border-subtle);
+      padding-right: 12px;
+      flex-shrink: 0;
+      z-index: 10000;
+      user-select: none;
+    }
+
+    .titlebar-drag {
+      flex: 1;
+      height: 100%;
+      -webkit-app-region: drag;
+      display: flex;
+      align-items: center;
+      padding-left: 16px;
+    }
+
+    .titlebar-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      letter-spacing: 0.3px;
+      pointer-events: none;
+    }
+
+    .titlebar-controls {
+      display: flex;
+      gap: 8px;
+      -webkit-app-region: no-drag;
+    }
+
+    .titlebar-btn {
+      width: 14px;
+      height: 14px;
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: filter var(--transition-quick);
+      padding: 0;
+      -webkit-app-region: no-drag;
+    }
+
+    .titlebar-btn:hover {
+      filter: brightness(0.85);
+    }
+
+    .titlebar-btn.close {
+      background: #ff5f57;
+    }
+
+    .titlebar-btn.minimize {
+      background: #febc2e;
+    }
+
+    .titlebar-btn.maximize {
+      background: #28c840;
+    }
+
+    .titlebar-btn svg {
+      width: 8px;
+      height: 8px;
+      stroke: rgba(0, 0, 0, 0.4);
+      stroke-width: 2;
+      fill: none;
+      opacity: 0;
+      transition: opacity var(--transition-quick);
+    }
+
+    .titlebar-controls:hover .titlebar-btn svg {
+      opacity: 1;
+    }
+
+    /* ============================================
+       APP CONTENT
+       ============================================ */
+
+    .app-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* File Drop Zone */
+    .drop-zone {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: var(--space-lg) var(--space-xl);
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+
+    .drop-zone-inner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: var(--space-xl) var(--space-xxl);
+      border: 2px dashed var(--border-default);
+      border-radius: var(--radius-lg);
+      color: var(--text-muted);
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color var(--transition-quick), color var(--transition-quick), background var(--transition-quick);
+    }
+
+    .drop-zone-inner:hover {
+      border-color: var(--brand-primary);
+      color: var(--text-secondary);
+      background: rgba(24, 104, 218, 0.05);
+    }
+
+    .drop-zone-inner.drag-over {
+      border-color: var(--brand-accent);
+      color: var(--text-primary);
+      background: rgba(24, 104, 218, 0.1);
+      border-width: 2px;
+    }
+
+    .drop-prompt {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+    }
+
+    .drop-prompt svg {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+      opacity: 0.6;
+    }
+
+    .file-info {
+      display: none;
+      align-items: center;
+      gap: var(--space-sm);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .file-info svg {
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .drop-zone.file-loaded .drop-zone-inner {
+      padding: var(--space-md) var(--space-lg);
+      border-style: solid;
+      border-width: 1px;
+      border-color: var(--border-subtle);
+      cursor: default;
+    }
+
+    .drop-zone.file-loaded .drop-zone-inner:hover {
+      background: transparent;
+      border-color: var(--border-subtle);
+      color: var(--text-muted);
+    }
+
+    .drop-zone.file-loaded .file-info {
+      display: flex;
+    }
+
+    .drop-zone.file-loaded .drop-prompt {
+      display: none;
+    }
+
+    .file-name {
+      color: var(--brand-accent);
+    }
+
+    .file-change-btn {
+      margin-left: var(--space-sm);
+      font-size: 11px;
+      color: var(--text-disabled);
+      cursor: pointer;
+      transition: color var(--transition-quick);
+      background: none;
+      border: none;
+      font-family: inherit;
+    }
+
+    .file-change-btn:hover {
+      color: var(--text-secondary);
+    }
+
+    /* ============================================
+       MAIN BODY: Two-Column Layout
+       ============================================ */
+
+    .main-body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Variants Panel (Left) */
+    .panel-variants {
+      width: 240px;
+      min-width: 140px;
+      max-width: 500px;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border-subtle);
+      position: relative;
+    }
+
+    .panel-variants-resize {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 5px;
+      cursor: col-resize;
+      z-index: 10;
+    }
+
+    .panel-variants-resize:hover,
+    .panel-variants-resize.active {
+      background: var(--brand-primary);
+      opacity: 0.4;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-md) var(--space-lg);
+      border-bottom: 1px solid var(--border-subtle);
+      min-height: 40px;
+    }
+
+    .panel-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-disabled);
+    }
+
+    .panel-count {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-disabled);
+      background: var(--bg-elevated);
+      padding: 1px 6px;
+      border-radius: var(--radius-sm);
+    }
+
+    /* Variant List */
+    .variant-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-xs);
+    }
+
+    .variant-list-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-disabled);
+      font-size: 12px;
+      padding: var(--space-xl);
+      text-align: center;
+      gap: var(--space-sm);
+    }
+
+    .variant-list-empty svg {
+      width: 24px;
+      height: 24px;
+      opacity: 0.4;
+    }
+
+    .variant-item {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: var(--space-sm) var(--space-md);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: background var(--transition-quick), color var(--transition-quick);
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    .variant-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-primary);
+    }
+
+    .variant-item.active {
+      background: rgba(24, 104, 218, 0.15);
+      color: var(--brand-accent);
+    }
+
+    .variant-item-indicator {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-disabled);
+      flex-shrink: 0;
+    }
+
+    .variant-item.active .variant-item-indicator {
+      background: var(--brand-accent);
+    }
+
+    .variant-item-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .variant-item-badge {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-disabled);
+      background: var(--bg-elevated);
+      padding: 1px 5px;
+      border-radius: var(--radius-sm);
+    }
+
+    .variant-item.active .variant-item-badge {
+      background: rgba(24, 104, 218, 0.2);
+      color: var(--brand-accent);
+    }
+
+    .variant-item-badge.template {
+      background: rgba(76, 175, 80, 0.15);
+      color: var(--color-success);
+    }
+
+    .variant-item.active .variant-item-badge.template {
+      background: rgba(76, 175, 80, 0.2);
+      color: var(--color-success);
+    }
+
+    /* Variant Actions */
+    .variant-actions {
+      display: flex;
+      gap: var(--space-sm);
+      padding: var(--space-sm) var(--space-md);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    /* ============================================
+       LAYER SETTINGS PANEL (Right)
+       ============================================ */
+
+    .panel-settings {
+      width: 280px;
+      min-width: 280px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid var(--border-subtle);
+    }
+
+    .settings-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-lg) var(--space-xl);
+    }
+
+    /* Preview Panel (Right) */
+    .panel-preview {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-deep);
+    }
+
+    .settings-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-disabled);
+      font-size: 12px;
+      gap: var(--space-sm);
+    }
+
+    .settings-empty svg {
+      width: 28px;
+      height: 28px;
+      opacity: 0.3;
+    }
+
+    /* Setting Sections */
+    .settings-section {
+      margin-bottom: var(--space-xl);
+    }
+
+    .settings-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .settings-section-header {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      margin-bottom: var(--space-md);
+      padding-bottom: var(--space-sm);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .settings-section-icon {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+    }
+
+    .settings-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+    }
+
+    /* Setting Rows */
+    .setting-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: 6px 0;
+    }
+
+    .setting-row label {
+      font-size: 13px;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .setting-row.disabled label {
+      color: var(--text-disabled);
+      cursor: default;
+    }
+
+    /* Radio Button Groups */
+    .radio-group {
+      margin-bottom: var(--space-lg);
+    }
+
+    .radio-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .radio-group-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      margin-bottom: var(--space-sm);
+    }
+
+    .radio-option {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: 5px 0;
+    }
+
+    .radio-option label {
+      font-size: 13px;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    input[type="radio"] {
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border: 1px solid var(--border-input);
+      border-radius: 50%;
+      background: var(--bg-input);
+      cursor: pointer;
+      position: relative;
+      flex-shrink: 0;
+      transition: border-color var(--transition-quick), background var(--transition-quick);
+    }
+
+    input[type="radio"]:checked {
+      border-color: var(--brand-primary);
+      background: var(--bg-input);
+    }
+
+    input[type="radio"]:checked::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--brand-primary);
+    }
+
+    input[type="radio"]:hover {
+      border-color: var(--border-hover);
+    }
+
+    /* Locked Layer Indicator */
+    .locked-item {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: 5px 0;
+      color: var(--text-disabled);
+      font-size: 13px;
+    }
+
+    .locked-item svg {
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+      opacity: 0.5;
+    }
+
+    /* Info Layer Indicator */
+    .info-item {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      padding: 5px 0;
+      color: var(--text-tertiary);
+      font-size: 13px;
+    }
+
+    .info-item svg {
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+      color: var(--color-warning);
+    }
+
+    /* ============================================
+       BOTTOM BAR
+       ============================================ */
+
+    .bottom-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--space-lg);
+      padding: var(--space-sm) var(--space-lg);
+      background: var(--bg-sidebar);
+      border-top: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+      min-height: 44px;
+    }
+
+    .bottom-bar-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .bottom-bar-group label {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .bottom-bar-separator {
+      width: 1px;
+      height: 20px;
+      background: var(--border-subtle);
+    }
+
+    .bottom-bar-spacer {
+      flex: 1;
+    }
+
+    .output-path-display {
+      font-size: 11px;
+      color: var(--text-disabled);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ============================================
+       SHARED COMPONENTS
+       ============================================ */
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-xs);
+      padding: 6px 12px;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      border: 1px solid var(--border-input);
+      border-radius: var(--radius-default);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all var(--transition-quick);
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background: var(--brand-primary);
+      border-color: var(--brand-primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--brand-hover);
+      border-color: var(--brand-hover);
+      color: white;
+    }
+
+    .btn-sm {
+      padding: var(--space-xs) var(--space-sm);
+      font-size: 11px;
+    }
+
+    .btn-flex {
+      flex: 1;
+    }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn:disabled:hover {
+      background: transparent;
+      color: var(--text-muted);
+      border-color: var(--border-input);
+    }
+
+    .btn-primary:disabled:hover {
+      background: var(--brand-primary);
+      border-color: var(--brand-primary);
+      color: white;
+    }
+
+    /* Inputs */
+    input[type="text"] {
+      padding: 6px var(--space-md);
+      font-family: inherit;
+      font-size: 12px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-input);
+      border-radius: var(--radius-default);
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition-quick);
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--brand-primary);
+    }
+
+    input[type="text"]::placeholder {
+      color: var(--text-faint);
+    }
+
+    input[type="text"]:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Checkboxes */
+    input[type="checkbox"] {
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border: 1px solid var(--border-input);
+      border-radius: var(--radius-sm);
+      background: var(--bg-input);
+      cursor: pointer;
+      position: relative;
+      flex-shrink: 0;
+      transition: border-color var(--transition-quick), background var(--transition-quick);
+    }
+
+    input[type="checkbox"]:hover {
+      border-color: var(--border-hover);
+    }
+
+    input[type="checkbox"]:checked {
+      background: var(--brand-primary);
+      border-color: var(--brand-primary);
+    }
+
+    input[type="checkbox"]:checked::after {
+      content: '';
+      position: absolute;
+      top: 1px;
+      left: 4px;
+      width: 4px;
+      height: 8px;
+      border: solid white;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+
+    input[type="checkbox"]:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #444;
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #555;
+    }
+
+    /* ============================================
+       TOAST NOTIFICATIONS
+       ============================================ */
+
+    .toast-container {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: var(--space-sm);
+      z-index: 10000;
+      pointer-events: none;
+    }
+
+    .toast {
+      display: flex;
+      align-items: center;
+      gap: var(--space-md);
+      padding: var(--space-md) var(--space-lg);
+      background: rgba(30, 30, 30, 0.95);
+      border: 1px solid var(--border-input);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+      font-size: 13px;
+      color: var(--text-primary);
+      pointer-events: auto;
+      max-width: 360px;
+    }
+
+    .toast.success {
+      border-left: 3px solid var(--color-success);
+    }
+
+    .toast.warning {
+      border-left: 3px solid var(--color-warning);
+    }
+
+    .toast.error {
+      border-left: 3px solid var(--color-error);
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateY(20px);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    @keyframes slideOut {
+      from {
+        transform: translateY(0);
+        opacity: 1;
+      }
+      to {
+        transform: translateY(20px);
+        opacity: 0;
+      }
+    }
+
+    /* ============================================
+       PROGRESS BAR (for exports)
+       ============================================ */
+
+    .progress-bar {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--brand-primary), var(--brand-hover));
+      border-radius: 3px;
+      transition: width var(--transition-slow);
+    }
+
+    /* ============================================
+       LIVE PREVIEW
+       ============================================ */
+
+    .preview-container {
+      position: relative;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    #preview-canvas {
+      max-width: 100%;
+      max-height: 100%;
+    }
+
+    .panel-preview .preview-info {
+      font-size: 10px;
+      color: var(--text-faint);
+    }
+
+    .preview-expand-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 24px;
+      height: 24px;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity var(--transition-quick);
+      z-index: 2;
+    }
+
+    .preview-container:hover .preview-expand-btn {
+      opacity: 1;
+    }
+
+    .preview-expand-btn:hover {
+      color: var(--text-primary);
+      background: rgba(0, 0, 0, 0.7);
+    }
+
+    .preview-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.92);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 20000;
+      cursor: pointer;
+    }
+
+    .preview-overlay canvas {
+      max-width: 95vw;
+      max-height: 95vh;
+    }
+
+    /* Export Size Chips */
+    .export-sizes {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .export-size-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .export-size-chip .remove-size {
+      cursor: pointer;
+      color: var(--text-disabled);
+      font-size: 13px;
+      line-height: 1;
+      font-weight: 600;
+    }
+
+    .export-size-chip .remove-size:hover {
+      color: var(--color-error-bright);
+    }
+
+    input[type="number"] {
+      padding: 4px var(--space-sm);
+      font-family: inherit;
+      font-size: 11px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-input);
+      border-radius: var(--radius-default);
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition-quick);
+      -moz-appearance: textfield;
+    }
+
+    input[type="number"]:focus {
+      border-color: var(--brand-primary);
+    }
+
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .variant-item-rename {
+      flex: 1;
+      background: var(--bg-input);
+      border: 1px solid var(--brand-primary);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 13px;
+      padding: 1px 4px;
+      outline: none;
+      min-width: 0;
+    }
+
+    /* ============================================
+       HELP MODAL
+       ============================================ */
+
+    .help-modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 15000;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s, visibility 0.2s;
+    }
+
+    .help-modal-overlay.visible {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .help-modal {
+      display: flex;
+      width: 620px;
+      height: 480px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-xl);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+      position: relative;
+      transform: scale(0.95);
+      transition: transform 0.2s;
+    }
+
+    .help-modal-overlay.visible .help-modal {
+      transform: scale(1);
+    }
+
+    .help-modal-close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 32px;
+      height: 32px;
+      background: transparent;
+      border: none;
+      color: var(--text-disabled);
+      cursor: pointer;
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background var(--transition-quick), color var(--transition-quick);
+      z-index: 10;
+    }
+
+    .help-modal-close:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+    }
+
+    .help-modal-sidebar {
+      width: 160px;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .help-modal-nav {
+      flex: 1;
+      padding: var(--space-lg) var(--space-sm);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .help-nav-item {
+      padding: var(--space-sm) var(--space-md);
+      font-size: 13px;
+      color: var(--text-muted);
+      text-decoration: none;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: background var(--transition-quick), color var(--transition-quick);
+    }
+
+    .help-nav-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-secondary);
+    }
+
+    .help-nav-item.active {
+      background: rgba(24, 104, 218, 0.15);
+      color: var(--brand-accent);
+    }
+
+    .help-modal-shortcut {
+      padding: var(--space-md);
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-faint);
+    }
+
+    .shortcut-key {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 6px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-muted);
+      min-width: 20px;
+    }
+
+    .help-modal-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--space-xl) var(--space-xxl);
+    }
+
+    .help-section {
+      margin-bottom: var(--space-xxl);
+    }
+
+    .help-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .help-section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: var(--space-lg);
+      padding-bottom: var(--space-sm);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .help-keybind-group {
+      margin-bottom: var(--space-lg);
+    }
+
+    .help-keybind-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .help-keybind-group-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-disabled);
+      margin-bottom: var(--space-sm);
+    }
+
+    .help-keybind-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0;
+    }
+
+    .help-keybind-label {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .help-keybind-keys {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .help-about-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: var(--space-md);
+    }
+
+    .help-about-version {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .help-color-list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-md);
+    }
+
+    .help-color-item {
+      padding: var(--space-md);
+      background: var(--bg-elevated);
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .help-color-item-header {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      margin-bottom: 4px;
+    }
+
+    .help-color-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .help-color-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .help-color-role {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-left: auto;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 500;
+    }
+
+    .help-color-desc {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      line-height: 1.5;
+      padding-left: 20px;
+    }
+
+    .help-modal-footer {
+      margin-top: var(--space-xxl);
+      padding-top: 20px;
+      border-top: 1px solid var(--border-subtle);
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-faint);
+    }
+
+    .help-modal-branding {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      margin-top: 6px;
+      font-size: 10px;
+      color: var(--text-faint);
+      letter-spacing: 0.5px;
+    }
+
+    .help-modal-branding a {
+      display: flex;
+      align-items: center;
+    }
+
+    .help-modal-branding img {
+      height: 10px;
+      width: auto;
+      opacity: 0.5;
+    }
+
+    /* ============================================
+       APP FOOTER (copied from livery-viewer)
+       ============================================ */
+
+    #footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 24px;
+      background: var(--bg-sidebar);
+      border-top: 1px solid var(--border-subtle);
+      z-index: 100;
+      flex-shrink: 0;
+    }
+
+    .footer-left {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .footer-copyright {
+      font-size: 11px;
+      color: #E9EDF5;
+    }
+
+    .footer-branding {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: #E9EDF5;
+      letter-spacing: 0.5px;
+    }
+
+    .footer-branding a {
+      display: flex;
+      align-items: center;
+      text-decoration: none;
+    }
+
+    .footer-branding img {
+      height: 10px;
+      width: auto;
+    }
+
+    .footer-right {
+      display: flex;
+      gap: 16px;
+    }
+
+    .footer-right a {
+      font-size: 11px;
+      color: #E9EDF5;
+      text-decoration: none;
+    }
+
+    .footer-right a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Title Bar (macOS-style, controls on right — matches livery-viewer) -->
+  <div class="titlebar">
+    <div class="titlebar-drag">
+      <span class="titlebar-label">LiveryLab Export</span>
+    </div>
+    <div class="titlebar-controls">
+      <button class="titlebar-btn minimize" id="btn-minimize">
+        <svg viewBox="0 0 12 12">
+          <line x1="2" y1="6" x2="10" y2="6"/>
+        </svg>
+      </button>
+      <button class="titlebar-btn maximize" id="btn-maximize">
+        <svg viewBox="0 0 12 12">
+          <polyline points="4,2 10,2 10,8"/>
+          <polyline points="8,10 2,10 2,4"/>
+        </svg>
+      </button>
+      <button class="titlebar-btn close" id="btn-close">
+        <svg viewBox="0 0 12 12">
+          <line x1="3" y1="3" x2="9" y2="9"/>
+          <line x1="9" y1="3" x2="3" y2="9"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- App Content -->
+  <div class="app-content">
+
+    <!-- File Drop Zone -->
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-zone-inner" id="drop-zone-inner">
+        <span class="drop-prompt">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          Drop a PSD file here or click to browse
+        </span>
+        <span class="file-info">
+          <svg viewBox="0 0 16 16" fill="none" width="14" height="14">
+            <rect x="2" y="1" width="12" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M5 5h6M5 8h4M5 11h5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+          </svg>
+          <span class="file-name" id="file-name">2020 FPIU.psd</span>
+          <button class="file-change-btn" id="btn-change-file">Change</button>
+        </span>
+      </div>
+    </div>
+
+    <!-- Main Body -->
+    <div class="main-body">
+
+      <!-- Variants Panel (Left) -->
+      <div class="panel-variants" id="panel-variants">
+        <div class="panel-variants-resize" id="variants-resize-handle"></div>
+        <div class="panel-header">
+          <span class="panel-title">Variants</span>
+          <span class="panel-count" id="variant-count" style="display:none">0</span>
+        </div>
+        <div class="variant-list" id="variant-list">
+          <div class="variant-list-empty">Load a PSD to get started</div>
+        </div>
+        <div class="variant-actions">
+          <button class="btn btn-sm btn-flex" id="btn-add-variant" disabled>+ Add Variant</button>
+          <button class="btn btn-sm" id="btn-delete-variant" disabled>Delete</button>
+        </div>
+      </div>
+
+      <!-- Layer Settings Panel (Center) -->
+      <div class="panel-settings">
+        <div class="panel-header">
+          <span class="panel-title">Layer Settings</span>
+        </div>
+        <div class="settings-content" id="settings-content">
+          <div class="settings-empty">No PSD loaded</div>
+        </div>
+      </div>
+
+      <!-- Preview Panel (Right) -->
+      <div class="panel-preview" style="position:relative">
+        <div class="panel-header">
+          <span class="panel-title">Preview</span>
+          <span class="preview-info" id="preview-info"></span>
+        </div>
+        <div class="preview-container" id="preview-container" style="display:none">
+          <canvas id="preview-canvas"></canvas>
+          <button class="preview-expand-btn" id="btn-preview-expand" title="View full size">
+            <svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <polyline points="9,1 13,1 13,5"/>
+              <polyline points="5,13 1,13 1,9"/>
+              <line x1="13" y1="1" x2="8" y2="6"/>
+              <line x1="1" y1="13" x2="6" y2="8"/>
+            </svg>
+          </button>
+        </div>
+        <div class="toast-container" id="toast-container"></div>
+      </div>
+
+    </div>
+
+    <!-- Bottom Bar -->
+    <div class="bottom-bar">
+      <div class="bottom-bar-group">
+        <label for="variant-name">Name:</label>
+        <input type="text" id="variant-name" placeholder="Select a variant" style="width: 160px" disabled>
+      </div>
+      <div class="bottom-bar-separator"></div>
+      <div class="bottom-bar-group">
+        <label>Sizes:</label>
+        <div class="export-sizes" id="export-sizes"></div>
+        <input type="number" id="export-size-input" placeholder="px" style="width: 60px" min="1" max="16384">
+        <button class="btn btn-sm" id="btn-add-size">+</button>
+      </div>
+      <div class="bottom-bar-separator"></div>
+      <div class="bottom-bar-group">
+        <button class="btn btn-sm" id="btn-browse-output">Output Folder</button>
+        <span class="output-path-display" id="output-path">Not set</span>
+      </div>
+      <div class="bottom-bar-separator"></div>
+      <div class="bottom-bar-group">
+        <input type="checkbox" id="chk-organize-by-area" style="margin:0">
+        <label for="chk-organize-by-area" style="cursor:pointer; user-select:none">Organize by area</label>
+      </div>
+      <div class="bottom-bar-spacer"></div>
+      <button class="btn btn-primary" id="btn-export-all" disabled>Export All Variants</button>
+    </div>
+
+    <!-- Footer -->
+    <div id="footer">
+      <div class="footer-left">
+        <div class="footer-copyright">LiveryLab &middot; &copy; 2026 All rights reserved</div>
+        <div class="footer-branding">
+          <span>A</span>
+          <a href="https://danielswork.shop"><img src="../assets/dw.svg" alt="DW"></a>
+          <span>PROJECT</span>
+        </div>
+      </div>
+      <div class="footer-right">
+        <a href="https://liverylab.cc/privacy-policy">Privacy Policy</a>
+        <a href="https://liverylab.cc/terms-of-service">Terms of Service</a>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Fullscreen Preview Overlay -->
+  <div class="preview-overlay" id="preview-overlay" style="display:none">
+    <canvas id="preview-overlay-canvas"></canvas>
+  </div>
+
+  <!-- Help Modal -->
+  <div class="help-modal-overlay" id="help-modal-overlay">
+    <div class="help-modal">
+      <button class="help-modal-close" id="help-modal-close">
+        <svg viewBox="0 0 24 24" width="20" height="20">
+          <line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <div class="help-modal-sidebar">
+        <div class="help-modal-nav">
+          <a href="#help-section-keybinds" class="help-nav-item active" data-section="keybinds">Keybinds</a>
+          <a href="#help-section-colors" class="help-nav-item" data-section="colors">Layer Colors</a>
+          <a href="#help-section-about" class="help-nav-item" data-section="about">About</a>
+        </div>
+        <div class="help-modal-shortcut">
+          <span class="shortcut-key">Ctrl</span> + <span class="shortcut-key">H</span>
+        </div>
+      </div>
+      <div class="help-modal-content">
+
+        <div class="help-section" id="help-section-keybinds">
+          <div class="help-section-title">Keybinds</div>
+
+          <div class="help-keybind-group">
+            <div class="help-keybind-group-title">File</div>
+            <div class="help-keybind-row">
+              <span class="help-keybind-label">Open PSD</span>
+              <span class="help-keybind-keys"><span class="shortcut-key">Ctrl</span> + <span class="shortcut-key">O</span></span>
+            </div>
+            <div class="help-keybind-row">
+              <span class="help-keybind-label">Export all variants</span>
+              <span class="help-keybind-keys"><span class="shortcut-key">Ctrl</span> + <span class="shortcut-key">E</span></span>
+            </div>
+          </div>
+
+          <div class="help-keybind-group">
+            <div class="help-keybind-group-title">Variants</div>
+            <div class="help-keybind-row">
+              <span class="help-keybind-label">Delete selected variant</span>
+              <span class="help-keybind-keys"><span class="shortcut-key">Del</span></span>
+            </div>
+          </div>
+
+          <div class="help-keybind-group">
+            <div class="help-keybind-group-title">General</div>
+            <div class="help-keybind-row">
+              <span class="help-keybind-label">Help / About</span>
+              <span class="help-keybind-keys"><span class="shortcut-key">Ctrl</span> + <span class="shortcut-key">H</span></span>
+            </div>
+            <div class="help-keybind-row">
+              <span class="help-keybind-label">Close overlay / modal</span>
+              <span class="help-keybind-keys"><span class="shortcut-key">Esc</span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="help-section" id="help-section-colors">
+          <div class="help-section-title">Layer Colors</div>
+          <p class="help-about-text" style="margin-bottom: var(--space-lg)">
+            Color-code your PSD layer groups and layers in Photoshop to control how LiveryLab Export treats them.
+          </p>
+          <div class="help-color-list">
+            <div class="help-color-item">
+              <div class="help-color-item-header">
+                <span class="help-color-swatch" style="background:#e74c3c"></span>
+                <span class="help-color-name">Red</span>
+                <span class="help-color-role">Locked</span>
+              </div>
+              <div class="help-color-desc">Always present in every export. Cannot be toggled off.</div>
+            </div>
+            <div class="help-color-item">
+              <div class="help-color-item-header">
+                <span class="help-color-swatch" style="background:#3b82f6"></span>
+                <span class="help-color-name">Blue</span>
+                <span class="help-color-role">Department</span>
+              </div>
+              <div class="help-color-desc">Group whose children become options &mdash; pick one per variant. Use for departments that share the same base livery.</div>
+            </div>
+            <div class="help-color-item">
+              <div class="help-color-item-header">
+                <span class="help-color-swatch" style="background:#f97316"></span>
+                <span class="help-color-name">Orange</span>
+                <span class="help-color-role">Info</span>
+              </div>
+              <div class="help-color-desc">Requires manual editing per variant, such as unit numbers or callsigns.</div>
+            </div>
+            <div class="help-color-item">
+              <div class="help-color-item-header">
+                <span class="help-color-swatch" style="background:#d946ef"></span>
+                <span class="help-color-name">Fuchsia</span>
+                <span class="help-color-role">Toggle</span>
+              </div>
+              <div class="help-color-desc">On/off checkbox per variant. Use for livery additions like K-9, HEAT, etc.</div>
+            </div>
+            <div class="help-color-item">
+              <div class="help-color-item-header">
+                <span class="help-color-swatch" style="background:#888"></span>
+                <span class="help-color-name">None</span>
+                <span class="help-color-role">Regular</span>
+              </div>
+              <div class="help-color-desc">Always visible. Not shown in the settings panel.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="help-section" id="help-section-about">
+          <div class="help-section-title">About</div>
+          <p class="help-about-text">
+            LiveryLab Export is a PSD layer variant exporter for livery designers. Load a color-coded PSD file, configure toggle and variant layers per variant, then batch export all variants as PNGs.
+          </p>
+          <p class="help-about-text">
+            Part of the <strong>LiveryLab</strong> suite of tools for the flight simulation livery painting community.
+          </p>
+          <p class="help-about-version" id="help-app-version">Version: loading...</p>
+        </div>
+
+        <div class="help-modal-footer">
+          <div>LiveryLab &middot; &copy; 2026 All rights reserved</div>
+          <div class="help-modal-branding">
+            <span>A</span>
+            <a href="https://danielswork.shop"><img src="../assets/dw.svg" alt="DW"></a>
+            <span>PROJECT</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+
+  <script src="./renderer.bundle.js"></script>
+</body>
+</html>
