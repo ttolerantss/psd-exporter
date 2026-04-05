@@ -8,6 +8,64 @@ if (!agPsdHelpers.layerColors.includes('fuchsia')) {
   agPsdHelpers.layerColors.push('fuchsia');
 }
 
+// Patch ag-psd enum decoders to tolerate long-name values. Newer Photoshop
+// sometimes stores blend modes (and other enums) as the long name inside
+// effect descriptors (e.g. "BlnM.multiply") instead of the expected 4-char
+// short code ("BlnM.Mltp"). ag-psd's enum decoder only has a reverse map
+// from short codes, so it throws "Unrecognized value for enum" which aborts
+// the entire parseEffects call — silently swallowed by psdReader, causing
+// the layer's effects (INCLUDING strokes) to be lost entirely.
+const agPsdAdditionalInfo = require('ag-psd/dist/additionalInfo');
+const agPsdDescriptor = require('ag-psd/dist/descriptor');
+(function patchEnumsToAcceptLongNames() {
+  const enumNames = ['BlnM', 'FStl', 'FrFl', 'BESl', 'bvlT', 'BESs', 'BETE',
+                     'IGSr', 'GrdT', 'Annt', 'Ornt', 'warpStyle', 'ClrS'];
+  for (const name of enumNames) {
+    const e = agPsdDescriptor[name];
+    if (!e || e._longNamePatched) continue;
+    const originalDecode = e.decode;
+    const encode = e.encode;
+    e.decode = function (val) {
+      try {
+        return originalDecode(val);
+      } catch (err) {
+        // The value after the dot may already be a long-name key that
+        // ag-psd uses internally (e.g. "BlnM.multiply" instead of
+        // "BlnM.Mltp"). Verify by round-tripping through encode — if
+        // encode accepts it, it's a valid canonical long name.
+        const v = (val || '').split('.')[1];
+        try {
+          encode(v);
+          return v;
+        } catch (e2) {
+          throw err; // not a valid long name either; preserve original error
+        }
+      }
+    };
+    e._longNamePatched = true;
+  }
+})();
+
+// Merge (rather than overwrite) effects when both lfx2 and lmfx sections
+// exist for the same layer — otherwise whichever runs second wipes the first.
+function patchEffectsHandlerToMerge(key) {
+  const handler = agPsdAdditionalInfo.infoHandlersMap && agPsdAdditionalInfo.infoHandlersMap[key];
+  if (!handler || handler._mergePatched) return;
+  const originalRead = handler.read;
+  handler.read = function (reader, target, left) {
+    const prior = target.effects;
+    originalRead.call(this, reader, target, left);
+    if (prior && target.effects) {
+      for (const k of Object.keys(prior)) {
+        if (target.effects[k] === undefined) target.effects[k] = prior[k];
+      }
+    }
+  };
+  handler._mergePatched = true;
+}
+patchEffectsHandlerToMerge('lfx2');
+patchEffectsHandlerToMerge('lmfx');
+
 const { readPsd } = require('ag-psd');
 
 // ============================================
