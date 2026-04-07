@@ -585,6 +585,14 @@ function classifyLayers(layers, depth = 0) {
 
     if (role === 'toggle') {
       result.toggle.push(layerInfo);
+      // Recurse into toggle groups to find nested variant (blue) groups.
+      // Don't surface nested toggles — violet children inside a toggle group
+      // are just content layers, not independent toggleables.
+      if (isGroup) {
+        const childResult = classifyLayers(layer.children, depth + 1);
+        result.variant.push(...childResult.variant);
+        result.info.push(...childResult.info);
+      }
     } else if (role === 'variant' && isGroup) {
       const options = (layer.children || []).map((child, i) => ({
         name: child.name || `Option ${i + 1}`,
@@ -1167,7 +1175,7 @@ function applyColorOverlay(ctx, layer, contentCanvas, offsetX, offsetY) {
   const effects = layer.effects;
   if (!effects || !effects.solidFill) return;
   for (const fill of effects.solidFill) {
-    if (fill.enabled === false) continue;
+    if (!isEffectActive(fill)) continue;
     const fillOpacity = fill.opacity != null ? fill.opacity : 1;
     const fillBlend = mapBlendMode(fill.blendMode);
     // Create a solid-color canvas clipped to the layer's alpha
@@ -1196,7 +1204,7 @@ function applyStroke(ctx, layer, contentCanvas, offsetX, offsetY) {
   if (!effects || !effects.stroke) return;
 
   for (const stroke of effects.stroke) {
-    if (stroke.enabled === false || stroke.present === false) continue;
+    if (!isEffectActive(stroke)) continue;
     if (stroke.fillType && stroke.fillType !== 'color') continue;
     const size = stroke.size ? (stroke.size.value || 0) : 0;
     if (size <= 0) continue;
@@ -1302,7 +1310,7 @@ function applyDropShadow(ctx, layer, contentCanvas, offsetX, offsetY) {
   const effects = layer.effects;
   if (!effects || !effects.dropShadow) return;
   for (const shadow of effects.dropShadow) {
-    if (shadow.enabled === false) continue;
+    if (!isEffectActive(shadow)) continue;
     const shadowOpacity = shadow.opacity != null ? shadow.opacity : 0.75;
     const shadowBlend = mapBlendMode(shadow.blendMode);
     const angle = (shadow.angle != null ? shadow.angle : 120) * Math.PI / 180;
@@ -1350,7 +1358,7 @@ function applyInnerShadow(ctx, layer, contentCanvas, offsetX, offsetY) {
   const effects = layer.effects;
   if (!effects || !effects.innerShadow) return;
   for (const shadow of effects.innerShadow) {
-    if (shadow.enabled === false) continue;
+    if (!isEffectActive(shadow)) continue;
     const shadowOpacity = shadow.opacity != null ? shadow.opacity : 0.75;
     const shadowBlend = mapBlendMode(shadow.blendMode);
     const angle = (shadow.angle != null ? shadow.angle : 120) * Math.PI / 180;
@@ -1403,13 +1411,18 @@ function applyInnerShadow(ctx, layer, contentCanvas, offsetX, offsetY) {
 }
 
 // Check if a layer has any effects that need rendering
+// Both `enabled` and `present` must be true (or absent) for an effect to apply.
+// Photoshop stores effects with present=false to mean "defined but not active".
+function isEffectActive(e) {
+  return e.enabled !== false && e.present !== false;
+}
 function hasEffects(layer) {
   const fx = layer.effects;
   if (!fx || fx.disabled) return false;
-  return (fx.solidFill && fx.solidFill.some(f => f.enabled !== false)) ||
-    (fx.stroke && fx.stroke.some(s => s.enabled !== false)) ||
-    (fx.dropShadow && fx.dropShadow.some(s => s.enabled !== false)) ||
-    (fx.innerShadow && fx.innerShadow.some(s => s.enabled !== false));
+  return (fx.solidFill && fx.solidFill.some(isEffectActive)) ||
+    (fx.stroke && fx.stroke.some(isEffectActive)) ||
+    (fx.dropShadow && fx.dropShadow.some(isEffectActive)) ||
+    (fx.innerShadow && fx.innerShadow.some(isEffectActive));
 }
 
 // Draw a single leaf layer (with mask support and effects) onto a target context
@@ -1689,7 +1702,8 @@ function drawLayerToCanvas(ctx, layer, layerStates, parentVariantGroupName, insi
       ? (layer.opacity > 1 ? layer.opacity / 255 : layer.opacity) : 1;
     const isPassThrough = (layer.blendMode === 'pass through');
     const groupHasFx = hasEffects(layer);
-    const needsIsolation = groupOpacity < 1 || !isPassThrough || groupHasFx;
+    const groupHasMask = layer.mask && layer.mask.canvas && !layer.mask.disabled;
+    const needsIsolation = groupOpacity < 1 || !isPassThrough || groupHasFx || groupHasMask;
 
     if (needsIsolation) {
       // Render children to temp canvas, then composite with group opacity/blend
@@ -1699,17 +1713,39 @@ function drawLayerToCanvas(ctx, layer, layerStates, parentVariantGroupName, insi
       const tempCtx = temp.getContext('2d');
       drawChildren(tempCtx, layer.children, layerStates, childGroupName, childInsideOption, childInsideToggle);
 
+      // Apply group mask if present
+      if (groupHasMask) {
+        const groupMask = document.createElement('canvas');
+        groupMask.width = temp.width;
+        groupMask.height = temp.height;
+        const gmCtx = groupMask.getContext('2d');
+        // Fill with default color
+        if ((layer.mask.defaultColor || 0) === 255) {
+          gmCtx.fillStyle = 'white';
+          gmCtx.fillRect(0, 0, groupMask.width, groupMask.height);
+        }
+        // Draw mask canvas at its position (group masks use absolute PSD coords)
+        gmCtx.drawImage(layer.mask.canvas, layer.mask.left || 0, layer.mask.top || 0);
+        // Convert grayscale to alpha
+        const maskData = gmCtx.getImageData(0, 0, groupMask.width, groupMask.height);
+        const md = maskData.data;
+        for (let i = 0; i < md.length; i += 4) {
+          md[i + 3] = md[i]; // Alpha = R (grayscale)
+          md[i] = 255; md[i + 1] = 255; md[i + 2] = 255;
+        }
+        gmCtx.putImageData(maskData, 0, 0);
+        tempCtx.globalCompositeOperation = 'destination-in';
+        tempCtx.drawImage(groupMask, 0, 0);
+      }
+
       if (groupHasFx) {
         // Apply effects to the composited group content
-        // We need to treat the group's composited result as the "content canvas"
         applyDropShadow(ctx, layer, temp, 0, 0);
-        // Draw the group content first
         ctx.save();
         ctx.globalAlpha = groupOpacity;
         ctx.globalCompositeOperation = isPassThrough ? 'source-over' : mapBlendMode(layer.blendMode);
         ctx.drawImage(temp, 0, 0);
         ctx.restore();
-        // Apply overlay effects on top
         applyColorOverlay(ctx, layer, temp, 0, 0);
         applyInnerShadow(ctx, layer, temp, 0, 0);
         applyStroke(ctx, layer, temp, 0, 0);
