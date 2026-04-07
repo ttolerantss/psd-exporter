@@ -1037,16 +1037,28 @@
       right: 0;
       bottom: 0;
       background: rgba(0, 0, 0, 0.92);
-      display: flex;
-      align-items: center;
-      justify-content: center;
       z-index: 20000;
-      cursor: pointer;
+      cursor: grab;
+      overflow: hidden;
+    }
+
+    .preview-overlay.dragging {
+      cursor: grabbing;
     }
 
     .preview-overlay canvas {
-      max-width: 95vw;
-      max-height: 95vh;
+      position: absolute;
+      image-rendering: pixelated;
+    }
+
+    .preview-overlay .zoom-hint {
+      position: absolute;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.5);
+      font-size: 12px;
+      pointer-events: none;
     }
 
     /* Export Size Chips */
@@ -1613,6 +1625,7 @@
   <!-- Fullscreen Preview Overlay -->
   <div class="preview-overlay" id="preview-overlay" style="display:none">
     <canvas id="preview-overlay-canvas"></canvas>
+    <div class="zoom-hint">Scroll to zoom · Drag to pan · Click to close · R to reset</div>
   </div>
 
   <!-- Help Modal -->

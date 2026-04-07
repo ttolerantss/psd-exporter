@@ -66,6 +66,199 @@ function patchEffectsHandlerToMerge(key) {
 patchEffectsHandlerToMerge('lfx2');
 patchEffectsHandlerToMerge('lmfx');
 
+// Patch Patt/Pat2/Pat3 handlers to read pattern pixel data.
+// ag-psd only has a (disabled) handler for 'Patt'. Photoshop can store
+// patterns under any of 'Patt', 'Pat2', or 'Pat3' — all use the same format.
+const agPsdReader = require('ag-psd/dist/psdReader');
+
+// Custom PackBits RLE decoder (ag-psd's readDataRLE produces uniform data for patterns)
+function decodePackBits(buffer, offset, rowLengths, width, height) {
+  const out = new Uint8Array(width * height);
+  let outIdx = 0;
+  for (let y = 0; y < height; y++) {
+    const rowEnd = offset + rowLengths[y];
+    let x = 0;
+    while (offset < rowEnd && x < width) {
+      const n = buffer[offset] > 127 ? buffer[offset] - 256 : buffer[offset]; // signed
+      offset++;
+      if (n >= 0) {
+        for (let j = 0; j <= n && x < width; j++, x++) {
+          out[outIdx++] = buffer[offset++];
+        }
+      } else if (n !== -128) {
+        const val = buffer[offset++];
+        const count = 1 - n;
+        for (let j = 0; j < count && x < width; j++, x++) {
+          out[outIdx++] = val;
+        }
+      }
+    }
+    offset = rowEnd;
+  }
+  return out;
+}
+
+function readPatternCustom(buf, absOffset, hasLengthPrefix = true) {
+  // buf = Uint8Array view of buffer
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let off = absOffset;
+  let end;
+
+  if (hasLengthPrefix) {
+    const length = view.getUint32(off); off += 4;
+    end = off + length;
+    while (end % 4) end++;
+  }
+
+  const version = view.getUint32(off); off += 4;
+  if (version !== 1) throw new Error(`Invalid pattern version: ${version}`);
+  const colorMode = view.getUint32(off); off += 4;
+  off += 4; // skip x, y (int16 + int16)
+
+  // Unicode string
+  const nameLen = view.getUint32(off); off += 4;
+  let name = '';
+  for (let i = 0; i < nameLen; i++) {
+    const c = view.getUint16(off); off += 2;
+    if (c || i < nameLen - 1) name += String.fromCharCode(c);
+  }
+
+  // Pascal string (padTo=1, NO alignment padding — matches ag-psd)
+  const idLen = buf[off]; off += 1;
+  let id = '';
+  for (let i = 0; i < idLen; i++) id += String.fromCharCode(buf[off++]);
+
+  if (colorMode === 2) off += 256 * 3 + 4; // indexed palette
+
+  // VMAL header
+  const v2 = view.getUint32(off); off += 4;
+  if (v2 !== 3) throw new Error(`Invalid VMAL version: ${v2}`);
+  off += 4; // VMAL length
+  const top = view.getUint32(off); off += 4;
+  const left = view.getUint32(off); off += 4;
+  const bottom = view.getUint32(off); off += 4;
+  const right = view.getUint32(off); off += 4;
+  const channelsCount = view.getUint32(off); off += 4;
+  const width = right - left, height = bottom - top;
+
+  const data = new Uint8Array(width * height * 4);
+  for (let i = 3; i < data.length; i += 4) data[i] = 255;
+
+  let ch = 0;
+  for (let i = 0; i < channelsCount + 2; i++) {
+    const has = view.getUint32(off); off += 4;
+    if (!has) continue;
+    const chLen = view.getUint32(off); off += 4;
+    off += 4; // pixelDepth
+    const ctop = view.getUint32(off); off += 4;
+    const cleft = view.getUint32(off); off += 4;
+    const cbottom = view.getUint32(off); off += 4;
+    const cright = view.getUint32(off); off += 4;
+    off += 2; // pixelDepth2
+    const comp = buf[off]; off += 1;
+    const dataLen = chLen - 23;
+    const w = cright - cleft, h = cbottom - ctop;
+    const ox = cleft - left, oy = ctop - top;
+
+    // Determine which RGBA component to write: ch 0-2 = R,G,B; last data channel = Alpha
+    const isRGB = colorMode === 3 && ch < 3;
+    const isGray = colorMode === 1 && ch < 1;
+    const isAlpha = ch >= 3; // channels beyond RGB are alpha/transparency
+
+    if (comp === 0) {
+      // Raw uncompressed
+      if (isRGB) {
+        for (let y = 0; y < h; y++)
+          for (let x = 0; x < w; x++)
+            data[((ox + x + (y + oy) * width) * 4) + ch] = buf[off + x + y * w];
+      } else if (isGray) {
+        for (let y = 0; y < h; y++)
+          for (let x = 0; x < w; x++) {
+            const dst = (ox + x + (y + oy) * width) * 4;
+            const v = buf[off + x + y * w];
+            data[dst] = v; data[dst + 1] = v; data[dst + 2] = v;
+          }
+      } else if (isAlpha) {
+        for (let y = 0; y < h; y++)
+          for (let x = 0; x < w; x++)
+            data[((ox + x + (y + oy) * width) * 4) + 3] = buf[off + x + y * w];
+      }
+    } else if (comp === 1) {
+      // RLE: read row byte counts, then decode
+      let roff = off;
+      const rowLens = [];
+      for (let y = 0; y < h; y++) { rowLens.push(view.getUint16(roff)); roff += 2; }
+      const channelData = decodePackBits(buf, roff, rowLens, w, h);
+      if (isRGB) {
+        for (let y = 0; y < h; y++)
+          for (let x = 0; x < w; x++)
+            data[((ox + x + (y + oy) * width) * 4) + ch] = channelData[x + y * w];
+      } else if (isGray) {
+        for (let y = 0; y < h; y++)
+          for (let x = 0; x < w; x++) {
+            const dst = (ox + x + (y + oy) * width) * 4;
+            const v = channelData[x + y * w];
+            data[dst] = v; data[dst + 1] = v; data[dst + 2] = v;
+          }
+      } else if (isAlpha) {
+        for (let y = 0; y < h; y++)
+          for (let x = 0; x < w; x++)
+            data[((ox + x + (y + oy) * width) * 4) + 3] = channelData[x + y * w];
+      }
+    }
+    off += dataLen;
+    ch++;
+  }
+  if (!hasLengthPrefix) end = off; // for .pat files, end is wherever we stopped reading
+  return { id, name, x: 0, y: 0, bounds: { x: left, y: top, w: width, h: height }, data, _end: end };
+}
+
+function patchPatternHandler(key) {
+  const existing = agPsdAdditionalInfo.infoHandlersMap && agPsdAdditionalInfo.infoHandlersMap[key];
+  if (existing && existing._pattPatched) return;
+
+  const readFn = function (reader, target, left) {
+    if (!left()) return;
+    if (!target.patterns) target.patterns = [];
+    // Get raw bytes for custom parsing
+    const startOff = reader.offset;
+    const rawLen = left();
+    const viewOff = reader.view.byteOffset;
+    const fullBuf = new Uint8Array(reader.view.buffer);
+    const base = viewOff + startOff;
+    let pos = base;
+    try {
+      while (pos < base + rawLen) {
+        const pat = readPatternCustom(fullBuf, pos);
+        target.patterns.push(pat);
+        pos = pat._end;
+        delete pat._end;
+      }
+    } catch (e) {
+      console.warn(`Pattern read error in ${key} (non-fatal):`, e.message);
+    }
+    reader.offset = startOff + rawLen;
+  };
+
+  if (existing) {
+    existing.read = readFn;
+    existing._pattPatched = true;
+  } else {
+    const handler = {
+      key: key,
+      has: function () { return false; },
+      read: readFn,
+      write: function () {},
+      _pattPatched: true
+    };
+    agPsdAdditionalInfo.infoHandlersMap[key] = handler;
+    agPsdAdditionalInfo.infoHandlers.push(handler);
+  }
+}
+patchPatternHandler('Patt');
+patchPatternHandler('Pat2');
+patchPatternHandler('Pat3');
+
 const { readPsd } = require('ag-psd');
 
 // ============================================
@@ -75,6 +268,9 @@ const { readPsd } = require('ag-psd');
 let currentPsd = null;
 let currentFilePath = null;
 let classifiedLayers = null;
+
+// Pattern data extracted from PSD — keyed by pattern id
+let patternMap = {};
 
 // Variant system
 let variants = [];          // Array of variant objects
@@ -417,6 +613,80 @@ function getSelectedVariant() {
 // PSD Loading
 // ============================================
 
+// Recursively collect patterns from all layers in the PSD tree
+function buildPatternMap(layer) {
+  if (layer.patterns) {
+    for (const pat of layer.patterns) {
+      if (pat.id && pat.data) {
+        patternMap[pat.id] = pat;
+      }
+    }
+  }
+  if (layer.children) {
+    for (const child of layer.children) {
+      buildPatternMap(child);
+    }
+  }
+}
+
+// Load pattern pixel data from .pat files in the assets/pats directory.
+// .pat format: 8BPT magic (4) + version uint16 (1) + count uint32, then
+// per-pattern records identical to PSD Patt blocks (with uint32 length prefix).
+function loadPatFiles() {
+  // Resolve pats directory for both dev and compiled modes
+  const candidates = [
+    path.join(__dirname, '..', 'assets', 'pats'),           // dev: src/renderer -> src/assets/pats
+    path.join(__dirname, 'assets', 'pats'),                  // alt dev layout
+    path.join(process.resourcesPath || '', 'assets', 'pats') // compiled
+  ];
+  let patsDir = null;
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) { patsDir = dir; break; }
+  }
+  if (!patsDir) return;
+
+  const files = fs.readdirSync(patsDir).filter(f => f.toLowerCase().endsWith('.pat'));
+  for (const file of files) {
+    try {
+      const buf = fs.readFileSync(path.join(patsDir, file));
+      const arr = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      const view = new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
+
+      // Check magic: "8BPT"
+      const magic = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
+      if (magic !== '8BPT') {
+        console.warn(`Skipping ${file}: invalid magic "${magic}"`);
+        continue;
+      }
+      const fileVersion = view.getUint16(4);
+      const patCount = view.getUint32(6);
+      let offset = 10; // past header
+
+      for (let p = 0; p < patCount && offset < arr.length; p++) {
+        try {
+          // Try with length prefix first (some .pat files have it), fall back without
+          let pat;
+          try {
+            pat = readPatternCustom(arr, offset, true);
+          } catch (e1) {
+            pat = readPatternCustom(arr, offset, false);
+          }
+          patternMap[pat.id] = pat;
+          console.log(`  Pattern: "${pat.name}" id=${pat.id} ${pat.bounds.w}x${pat.bounds.h}`);
+          offset = pat._end;
+          delete pat._end;
+        } catch (e) {
+          console.warn(`Error reading pattern ${p} from ${file}:`, e.message);
+          break;
+        }
+      }
+      console.log(`[PatFiles] Loaded ${file}: ${patCount} pattern(s)`);
+    } catch (e) {
+      console.warn(`Failed to read .pat file ${file}:`, e.message);
+    }
+  }
+}
+
 async function loadPsdFile(filePath) {
   if (!filePath || !filePath.toLowerCase().endsWith('.psd')) {
     showToast('Please select a valid PSD file', 'error');
@@ -433,6 +703,18 @@ async function loadPsdFile(filePath) {
     currentPsd = psd;
     currentFilePath = filePath;
     idCounter = 0;
+
+    // Build pattern lookup map: PSD first, then .pat files override placeholders
+    patternMap = {};
+    buildPatternMap(psd);
+    loadPatFiles(); // .pat files override PSD placeholder data
+    const patCount = Object.keys(patternMap).length;
+    if (patCount > 0) {
+      console.log(`[Patterns] ${patCount} pattern(s) available:`);
+      for (const [id, p] of Object.entries(patternMap)) {
+        console.log(`  "${p.name}" id=${id} ${p.bounds.w}x${p.bounds.h}`);
+      }
+    }
 
     const fileName = path.basename(filePath);
     document.getElementById('file-name').textContent = fileName;
@@ -1203,7 +1485,9 @@ function applyStroke(ctx, layer, contentCanvas, offsetX, offsetY) {
   const effects = layer.effects;
   if (!effects || !effects.stroke) return;
 
-  for (const stroke of effects.stroke) {
+  // Render strokes in reverse order: last (bottom/largest) first, first (top/smallest) last
+  for (let si = effects.stroke.length - 1; si >= 0; si--) {
+    const stroke = effects.stroke[si];
     if (!isEffectActive(stroke)) continue;
     if (stroke.fillType && stroke.fillType !== 'color') continue;
     const size = stroke.size ? (stroke.size.value || 0) : 0;
@@ -1410,6 +1694,70 @@ function applyInnerShadow(ctx, layer, contentCanvas, offsetX, offsetY) {
   }
 }
 
+// Apply pattern overlay effect to a layer canvas
+function applyPatternOverlay(ctx, layer, contentCanvas, offsetX, offsetY) {
+  const effects = layer.effects;
+  if (!effects || !effects.patternOverlay) return;
+  const po = effects.patternOverlay;
+  if (!isEffectActive(po)) return;
+  const patRef = po.pattern;
+  if (!patRef || !patRef.id) return;
+  const pat = patternMap[patRef.id];
+  if (!pat || !pat.data) {
+    console.warn(`Pattern "${patRef.name || patRef.id}" not found in PSD`);
+    return;
+  }
+
+  const poOpacity = po.opacity != null ? po.opacity : 1;
+  const poBlend = mapBlendMode(po.blendMode);
+  const scale = po.scale != null ? po.scale : 1;
+  const phaseX = po.phase ? po.phase.x : 0;
+  const phaseY = po.phase ? po.phase.y : 0;
+
+  // Build the pattern tile canvas (cached on first use)
+  const patW = pat.bounds.w;
+  const patH = pat.bounds.h;
+  if (!pat._canvas) {
+    const patCanvas = document.createElement('canvas');
+    patCanvas.width = patW;
+    patCanvas.height = patH;
+    const patCtx = patCanvas.getContext('2d');
+    const imgData = new ImageData(new Uint8ClampedArray(pat.data.buffer, pat.data.byteOffset, pat.data.byteLength), patW, patH);
+    patCtx.putImageData(imgData, 0, 0);
+    pat._canvas = patCanvas;
+  }
+
+  // Tile the pattern across the content area using createPattern + setTransform
+  // for proper sub-pixel scaling (avoids detail loss from pre-scaling tiny tiles)
+  const tiled = document.createElement('canvas');
+  tiled.width = contentCanvas.width;
+  tiled.height = contentCanvas.height;
+  const tiledCtx = tiled.getContext('2d');
+
+  const canvasPattern = tiledCtx.createPattern(pat._canvas, 'repeat');
+  if (!canvasPattern) return;
+
+  // Apply scale and phase via the pattern's own transform matrix
+  const matrix = new DOMMatrix();
+  matrix.translateSelf(phaseX, phaseY);
+  if (scale !== 1 && scale > 0) matrix.scaleSelf(scale, scale);
+  canvasPattern.setTransform(matrix);
+
+  tiledCtx.fillStyle = canvasPattern;
+  tiledCtx.fillRect(0, 0, tiled.width, tiled.height);
+
+  // Clip to layer alpha using destination-in
+  tiledCtx.globalCompositeOperation = 'destination-in';
+  tiledCtx.drawImage(contentCanvas, 0, 0);
+
+  // Draw onto main context
+  ctx.save();
+  ctx.globalAlpha = poOpacity;
+  ctx.globalCompositeOperation = poBlend;
+  ctx.drawImage(tiled, offsetX, offsetY);
+  ctx.restore();
+}
+
 // Check if a layer has any effects that need rendering
 // Both `enabled` and `present` must be true (or absent) for an effect to apply.
 // Photoshop stores effects with present=false to mean "defined but not active".
@@ -1422,7 +1770,8 @@ function hasEffects(layer) {
   return (fx.solidFill && fx.solidFill.some(isEffectActive)) ||
     (fx.stroke && fx.stroke.some(isEffectActive)) ||
     (fx.dropShadow && fx.dropShadow.some(isEffectActive)) ||
-    (fx.innerShadow && fx.innerShadow.some(isEffectActive));
+    (fx.innerShadow && fx.innerShadow.some(isEffectActive)) ||
+    (fx.patternOverlay && isEffectActive(fx.patternOverlay));
 }
 
 // Draw a single leaf layer (with mask support and effects) onto a target context
@@ -1463,6 +1812,9 @@ function drawLeafLayer(ctx, layer) {
 
       // Draw the layer content
       fxCtx.drawImage(contentCanvas, ox, oy);
+
+      // Pattern overlay renders ON TOP of the layer content (before color overlay)
+      applyPatternOverlay(fxCtx, layer, contentCanvas, ox, oy);
 
       // Color overlay renders ON TOP of the layer content
       applyColorOverlay(fxCtx, layer, contentCanvas, ox, oy);
@@ -1746,6 +2098,7 @@ function drawLayerToCanvas(ctx, layer, layerStates, parentVariantGroupName, insi
         ctx.globalCompositeOperation = isPassThrough ? 'source-over' : mapBlendMode(layer.blendMode);
         ctx.drawImage(temp, 0, 0);
         ctx.restore();
+        applyPatternOverlay(ctx, layer, temp, 0, 0);
         applyColorOverlay(ctx, layer, temp, 0, 0);
         applyInnerShadow(ctx, layer, temp, 0, 0);
         applyStroke(ctx, layer, temp, 0, 0);
@@ -2007,22 +2360,100 @@ document.addEventListener('mouseup', () => {
   }
 });
 
-// Fullscreen preview
-document.getElementById('btn-preview-expand').addEventListener('click', () => {
+// Fullscreen preview with zoom & pan
+(function initFullscreenPreview() {
   const overlay = document.getElementById('preview-overlay');
   const overlayCanvas = document.getElementById('preview-overlay-canvas');
-  const srcCanvas = document.getElementById('preview-canvas');
+  let imgW = 0, imgH = 0; // native canvas pixel size
+  let displayW = 0, displayH = 0; // current CSS display size
+  let left = 0, top = 0; // current CSS position
+  let isDragging = false, dragStartX = 0, dragStartY = 0, dragStartLeft = 0, dragStartTop = 0;
+  let didDrag = false;
 
-  overlayCanvas.width = srcCanvas.width;
-  overlayCanvas.height = srcCanvas.height;
-  overlayCanvas.getContext('2d').drawImage(srcCanvas, 0, 0);
+  function resetView() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const fitScale = Math.min((vw * 0.95) / imgW, (vh * 0.95) / imgH);
+    displayW = imgW * fitScale;
+    displayH = imgH * fitScale;
+    left = (vw - displayW) / 2;
+    top = (vh - displayH) / 2;
+    applyView();
+  }
 
-  overlay.style.display = '';
-});
+  function applyView() {
+    overlayCanvas.style.left = left + 'px';
+    overlayCanvas.style.top = top + 'px';
+    overlayCanvas.style.width = displayW + 'px';
+    overlayCanvas.style.height = displayH + 'px';
+  }
 
-document.getElementById('preview-overlay').addEventListener('click', () => {
-  document.getElementById('preview-overlay').style.display = 'none';
-});
+  document.getElementById('btn-preview-expand').addEventListener('click', () => {
+    const srcCanvas = document.getElementById('preview-canvas');
+    overlayCanvas.width = srcCanvas.width;
+    overlayCanvas.height = srcCanvas.height;
+    overlayCanvas.getContext('2d').drawImage(srcCanvas, 0, 0);
+    imgW = srcCanvas.width;
+    imgH = srcCanvas.height;
+    overlay.style.display = '';
+    resetView();
+  });
+
+  // Zoom with scroll wheel toward cursor
+  overlay.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const newW = Math.max(50, displayW * factor);
+    const newH = newW * (imgH / imgW);
+    // Zoom toward mouse position
+    const mx = e.clientX, my = e.clientY;
+    const ratioX = (mx - left) / displayW;
+    const ratioY = (my - top) / displayH;
+    left = mx - ratioX * newW;
+    top = my - ratioY * newH;
+    displayW = newW;
+    displayH = newH;
+    applyView();
+  }, { passive: false });
+
+  // Pan with mouse drag
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    isDragging = true;
+    didDrag = false;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    dragStartLeft = left;
+    dragStartTop = top;
+    overlay.classList.add('dragging');
+    e.preventDefault();
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX - dragStartX;
+    const dy = e.clientY - dragStartY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didDrag = true;
+    left = dragStartLeft + dx;
+    top = dragStartTop + dy;
+    applyView();
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!isDragging) return;
+    isDragging = false;
+    overlay.classList.remove('dragging');
+    if (!didDrag) {
+      overlay.style.display = 'none';
+    }
+  });
+
+  // Keyboard: R to reset, Escape handled elsewhere
+  window.addEventListener('keydown', (e) => {
+    if (overlay.style.display === 'none') return;
+    if (e.key === 'r' || e.key === 'R') resetView();
+  });
+})();
 
 // ============================================
 // Help Modal

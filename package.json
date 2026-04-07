@@ -36,7 +36,8 @@
     "asar": true,
     "asarUnpack": [
       "**/*.node",
-      "**/src/assets/*.ico"
+      "**/src/assets/*.ico",
+      "**/src/assets/pats/*.pat"
     ],
     "files": [
       "src/**/*",
