@@ -983,7 +983,7 @@ function switchDepartment(index) {
   renderVariantList();
   renderLayerSettings();
   updateBottomBar();
-  renderPreview();
+  schedulePreviewUpdate();
 }
 
 // Get the children to composite for preview/export
@@ -1015,7 +1015,7 @@ function generateLayerId(name, depth) {
 // Required Layer Validation
 // ============================================
 
-const REQUIRED_LAYERS = ['AO Map', 'Watermark', 'Template', 'Paint Overlay'];
+const REQUIRED_LAYERS = ['AO Map', 'Watermark', 'Paint Overlay'];
 
 function validateRequiredLayers(classified) {
   const allNames = [
@@ -1391,14 +1391,18 @@ function isLayerVisibleForComposite(layer, layerStates, parentVariantGroupName, 
 // ag-psd stores masks as grayscale canvases where the RGB channels hold the mask value
 // but alpha is always 255. Canvas 'destination-in' only checks alpha, so we must convert.
 function createAlphaMask(mask, layerWidth, layerHeight, layerLeft, layerTop) {
+  // Cache key based on dimensions and position
+  const cacheKey = `${layerWidth}_${layerHeight}_${layerLeft}_${layerTop}`;
+  if (mask._alphaMaskCache && mask._alphaMaskCacheKey === cacheKey) {
+    return mask._alphaMaskCache;
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = layerWidth;
   canvas.height = layerHeight;
   const ctx = canvas.getContext('2d');
 
   // Fill with default color (areas outside mask canvas)
-  // defaultColor=255 means areas outside mask are visible (white)
-  // defaultColor=0 means areas outside mask are hidden (black/transparent)
   if ((mask.defaultColor || 0) === 255) {
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1413,13 +1417,15 @@ function createAlphaMask(mask, layerWidth, layerHeight, layerLeft, layerTop) {
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
-    data[i + 3] = data[i]; // Alpha = R (grayscale luminance)
+    data[i + 3] = data[i];
     data[i] = 255;
     data[i + 1] = 255;
     data[i + 2] = 255;
   }
   ctx.putImageData(imageData, 0, 0);
 
+  mask._alphaMaskCache = canvas;
+  mask._alphaMaskCacheKey = cacheKey;
   return canvas;
 }
 
@@ -1434,7 +1440,13 @@ function colorToCSS(color, opacity) {
 }
 
 // Get the alpha silhouette of a canvas (white where opaque, transparent where transparent)
+// WeakMap cache: sourceCanvas → silhouette canvas
+const silhouetteCache = new WeakMap();
+
 function getAlphaSilhouette(sourceCanvas) {
+  const cached = silhouetteCache.get(sourceCanvas);
+  if (cached) return cached;
+
   const c = document.createElement('canvas');
   c.width = sourceCanvas.width;
   c.height = sourceCanvas.height;
@@ -1443,12 +1455,13 @@ function getAlphaSilhouette(sourceCanvas) {
   const imgData = cx.getImageData(0, 0, c.width, c.height);
   const d = imgData.data;
   for (let i = 0; i < d.length; i += 4) {
-    // Keep alpha, set RGB to white (for color fill) or leave for shape
     d[i] = 255;
     d[i + 1] = 255;
     d[i + 2] = 255;
   }
   cx.putImageData(imgData, 0, 0);
+
+  silhouetteCache.set(sourceCanvas, c);
   return c;
 }
 
@@ -1784,18 +1797,21 @@ function drawLeafLayer(ctx, layer) {
   const hasFx = hasEffects(layer);
 
   try {
-    // Get the content canvas (with mask applied if needed)
+    // Get the content canvas (with mask applied if needed) — cached on layer
     let contentCanvas = layer.canvas;
     if (hasMask) {
-      const temp = document.createElement('canvas');
-      temp.width = layer.canvas.width;
-      temp.height = layer.canvas.height;
-      const tempCtx = temp.getContext('2d');
-      tempCtx.drawImage(layer.canvas, 0, 0);
-      const alphaMask = createAlphaMask(layer.mask, layer.canvas.width, layer.canvas.height, layer.left || 0, layer.top || 0);
-      tempCtx.globalCompositeOperation = 'destination-in';
-      tempCtx.drawImage(alphaMask, 0, 0);
-      contentCanvas = temp;
+      if (!layer._maskedContentCache) {
+        const temp = document.createElement('canvas');
+        temp.width = layer.canvas.width;
+        temp.height = layer.canvas.height;
+        const tempCtx = temp.getContext('2d');
+        tempCtx.drawImage(layer.canvas, 0, 0);
+        const alphaMask = createAlphaMask(layer.mask, layer.canvas.width, layer.canvas.height, layer.left || 0, layer.top || 0);
+        tempCtx.globalCompositeOperation = 'destination-in';
+        tempCtx.drawImage(alphaMask, 0, 0);
+        layer._maskedContentCache = temp;
+      }
+      contentCanvas = layer._maskedContentCache;
     }
 
     if (hasFx) {
@@ -1927,17 +1943,20 @@ function drawClippingGroup(ctx, baseLayer, clippedLayers, layerStates, parentVar
         ? (clipped.opacity > 1 ? clipped.opacity / 255 : clipped.opacity) : 1;
       tempCtx.globalAlpha = a;
 
-      // Handle mask on clipped layer
+      // Handle mask on clipped layer (cached)
       if (clipped.mask && clipped.mask.canvas && !clipped.mask.disabled) {
-        const maskTemp = document.createElement('canvas');
-        maskTemp.width = clipped.canvas.width;
-        maskTemp.height = clipped.canvas.height;
-        const maskCtx = maskTemp.getContext('2d');
-        maskCtx.drawImage(clipped.canvas, 0, 0);
-        const alphaMask = createAlphaMask(clipped.mask, clipped.canvas.width, clipped.canvas.height, clipped.left || 0, clipped.top || 0);
-        maskCtx.globalCompositeOperation = 'destination-in';
-        maskCtx.drawImage(alphaMask, 0, 0);
-        tempCtx.drawImage(maskTemp, clipped.left || 0, clipped.top || 0);
+        if (!clipped._maskedContentCache) {
+          const maskTemp = document.createElement('canvas');
+          maskTemp.width = clipped.canvas.width;
+          maskTemp.height = clipped.canvas.height;
+          const maskCtx = maskTemp.getContext('2d');
+          maskCtx.drawImage(clipped.canvas, 0, 0);
+          const alphaMask = createAlphaMask(clipped.mask, clipped.canvas.width, clipped.canvas.height, clipped.left || 0, clipped.top || 0);
+          maskCtx.globalCompositeOperation = 'destination-in';
+          maskCtx.drawImage(alphaMask, 0, 0);
+          clipped._maskedContentCache = maskTemp;
+        }
+        tempCtx.drawImage(clipped._maskedContentCache, clipped.left || 0, clipped.top || 0);
       } else {
         tempCtx.drawImage(clipped.canvas, clipped.left || 0, clipped.top || 0);
       }
@@ -2065,29 +2084,30 @@ function drawLayerToCanvas(ctx, layer, layerStates, parentVariantGroupName, insi
       const tempCtx = temp.getContext('2d');
       drawChildren(tempCtx, layer.children, layerStates, childGroupName, childInsideOption, childInsideToggle);
 
-      // Apply group mask if present
+      // Apply group mask if present (cached)
       if (groupHasMask) {
-        const groupMask = document.createElement('canvas');
-        groupMask.width = temp.width;
-        groupMask.height = temp.height;
-        const gmCtx = groupMask.getContext('2d');
-        // Fill with default color
-        if ((layer.mask.defaultColor || 0) === 255) {
-          gmCtx.fillStyle = 'white';
-          gmCtx.fillRect(0, 0, groupMask.width, groupMask.height);
+        if (!layer._groupMaskCache || layer._groupMaskCacheSize !== `${temp.width}_${temp.height}`) {
+          const groupMask = document.createElement('canvas');
+          groupMask.width = temp.width;
+          groupMask.height = temp.height;
+          const gmCtx = groupMask.getContext('2d');
+          if ((layer.mask.defaultColor || 0) === 255) {
+            gmCtx.fillStyle = 'white';
+            gmCtx.fillRect(0, 0, groupMask.width, groupMask.height);
+          }
+          gmCtx.drawImage(layer.mask.canvas, layer.mask.left || 0, layer.mask.top || 0);
+          const maskData = gmCtx.getImageData(0, 0, groupMask.width, groupMask.height);
+          const md = maskData.data;
+          for (let i = 0; i < md.length; i += 4) {
+            md[i + 3] = md[i];
+            md[i] = 255; md[i + 1] = 255; md[i + 2] = 255;
+          }
+          gmCtx.putImageData(maskData, 0, 0);
+          layer._groupMaskCache = groupMask;
+          layer._groupMaskCacheSize = `${temp.width}_${temp.height}`;
         }
-        // Draw mask canvas at its position (group masks use absolute PSD coords)
-        gmCtx.drawImage(layer.mask.canvas, layer.mask.left || 0, layer.mask.top || 0);
-        // Convert grayscale to alpha
-        const maskData = gmCtx.getImageData(0, 0, groupMask.width, groupMask.height);
-        const md = maskData.data;
-        for (let i = 0; i < md.length; i += 4) {
-          md[i + 3] = md[i]; // Alpha = R (grayscale)
-          md[i] = 255; md[i + 1] = 255; md[i + 2] = 255;
-        }
-        gmCtx.putImageData(maskData, 0, 0);
         tempCtx.globalCompositeOperation = 'destination-in';
-        tempCtx.drawImage(groupMask, 0, 0);
+        tempCtx.drawImage(layer._groupMaskCache, 0, 0);
       }
 
       if (groupHasFx) {
@@ -2117,14 +2137,26 @@ function drawLayerToCanvas(ctx, layer, layerStates, parentVariantGroupName, insi
   }
 }
 
+// Cached checkerboard pattern (created once, reused every render)
+let cachedCheckerboardPattern = null;
+
 function drawCheckerboard(ctx, width, height) {
-  const size = 16;
-  for (let y = 0; y < height; y += size) {
-    for (let x = 0; x < width; x += size) {
-      ctx.fillStyle = ((x / size + y / size) % 2 === 0) ? '#3a3a3a' : '#2e2e2e';
-      ctx.fillRect(x, y, size, size);
-    }
+  if (!cachedCheckerboardPattern) {
+    const size = 16;
+    const tile = document.createElement('canvas');
+    tile.width = size * 2;
+    tile.height = size * 2;
+    const tCtx = tile.getContext('2d');
+    tCtx.fillStyle = '#3a3a3a';
+    tCtx.fillRect(0, 0, size, size);
+    tCtx.fillRect(size, size, size, size);
+    tCtx.fillStyle = '#2e2e2e';
+    tCtx.fillRect(size, 0, size, size);
+    tCtx.fillRect(0, size, size, size);
+    cachedCheckerboardPattern = ctx.createPattern(tile, 'repeat');
   }
+  ctx.fillStyle = cachedCheckerboardPattern;
+  ctx.fillRect(0, 0, width, height);
 }
 
 function renderPreview() {
@@ -2201,7 +2233,7 @@ function selectVariant(id) {
   renderVariantList();
   renderLayerSettings();
   updateBottomBar();
-  renderPreview();
+  schedulePreviewUpdate();
 }
 
 function addVariant() {
@@ -2214,7 +2246,7 @@ function addVariant() {
   renderVariantList();
   renderLayerSettings();
   updateBottomBar();
-  renderPreview();
+  schedulePreviewUpdate();
   saveSidecar();
 
   // Focus the name input so user can rename immediately
@@ -2800,19 +2832,11 @@ function scaleCanvas(srcCanvas, targetWidth) {
   return canvas;
 }
 
-// Convert a canvas to a PNG buffer
+// Convert a canvas to a PNG buffer (synchronous — works even when app is backgrounded)
 function canvasToBuffer(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(blob => {
-      if (!blob) {
-        reject(new Error('Failed to create PNG blob'));
-        return;
-      }
-      blob.arrayBuffer().then(ab => {
-        resolve(Buffer.from(ab));
-      }).catch(reject);
-    }, 'image/png');
-  });
+  const dataUrl = canvas.toDataURL('image/png');
+  const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  return Buffer.from(base64, 'base64');
 }
 
 // Get the export file path for a variant + size (relative to output directory)
@@ -2944,7 +2968,7 @@ async function exportAllVariants() {
 
         try {
           const scaled = scaleCanvas(fullCanvas, size);
-          const buffer = await canvasToBuffer(scaled);
+          const buffer = canvasToBuffer(scaled);
           const relPath = getExportFilePath(job.variant, size, hasMultipleSizes, job.deptName);
           const filePath = path.join(outputDirectory, relPath);
 
@@ -2958,7 +2982,8 @@ async function exportAllVariants() {
           errors++;
         }
 
-        await new Promise(r => setTimeout(r, 10));
+        // Yield to UI thread for progress updates (setImmediate avoids background throttling)
+        await new Promise(r => setImmediate(r));
       }
     }
 
@@ -3031,6 +3056,7 @@ document.getElementById('btn-change-file').addEventListener('click', (e) => {
 // Variant list — event delegation for click + double-click rename
 let variantLastClickId = null;
 let variantLastClickTime = 0;
+let variantClickTimer = null;
 
 document.getElementById('variant-list').addEventListener('click', (e) => {
   const item = e.target.closest('.variant-item');
@@ -3053,11 +3079,17 @@ document.getElementById('variant-list').addEventListener('click', (e) => {
   }
 
   if (variantLastClickId === id && (now - variantLastClickTime) < 400) {
-    // Double-click: select then rename
+    // Double-click: cancel pending single-click preview, then rename
+    clearTimeout(variantClickTimer);
+    variantClickTimer = null;
     const variant = variants.find(v => v.id === id);
     if (variant) {
       selectedVariantIds.clear();
-      selectVariant(id);
+      // Select without preview — variant is already selected from first click
+      selectedVariantId = id;
+      renderVariantList();
+      renderLayerSettings();
+      updateBottomBar();
       const freshItem = document.querySelector(`.variant-item[data-variant-id="${id}"]`);
       if (freshItem) {
         const nameSpan = freshItem.querySelector('.variant-item-name');
@@ -3067,10 +3099,21 @@ document.getElementById('variant-list').addEventListener('click', (e) => {
     variantLastClickId = null;
     variantLastClickTime = 0;
   } else {
+    // Single click: select immediately (UI) but defer preview render
+    // so a quick double-click won't be blocked by the heavy render
+    clearTimeout(variantClickTimer);
     selectedVariantIds.clear();
-    selectVariant(id);
+    selectedVariantId = id;
+    renderVariantList();
+    renderLayerSettings();
+    updateBottomBar();
     variantLastClickId = id;
     variantLastClickTime = now;
+    // Delay preview render past the double-click window
+    variantClickTimer = setTimeout(() => {
+      variantClickTimer = null;
+      renderPreview();
+    }, 420);
   }
 });
 
